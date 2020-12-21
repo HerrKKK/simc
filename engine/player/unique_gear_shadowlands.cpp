@@ -637,11 +637,6 @@ void soul_igniter( special_effect_t& effect )
     {
       proc_spell_t::execute();
 
-      // Need to trigger the category cooldown that this trinket does not have on other trinkets.
-      auto cd_group = player->get_cooldown( "item_cd_" + util::to_string( second_action->category() ) );
-      if ( cd_group )
-        cd_group->start( second_action->category_cooldown() );
-
       if ( buff->check() )
       {
         buff->expire();
@@ -664,9 +659,27 @@ void soul_igniter( special_effect_t& effect )
     make_buff<soul_ignition_buff_t>( effect, damage_action );
 }
 
-void skulkers_wing( special_effect_t& /* effect */ )
+/** Skulker's Wing
+ * id=345019 driver speed buff, effect 1: 8y area trigger create
+ * id=345113 dummy damage container spell
+ * id=345020 actual triggered leap+damage spell
+ */
+void skulkers_wing( special_effect_t& effect )
 {
+  struct skulking_predator_t : public proc_spell_t
+  {
+    skulking_predator_t( const special_effect_t& e ) :
+      proc_spell_t( "skulking_predator", e.player, e.player->find_spell( 345020 ) )
+    {
+      base_dd_min = base_dd_max = e.player->find_spell( 345113 )->effectN( 1 ).average( e.item );
+    }
+  };
 
+  // Speed buff is only present until the damage trigger happens, this within 100ms if you are already in range
+  // For now assume we are nearest to the primary target and just trigger the damage immediately
+  // TODO: Speed buff + range-based target selection?
+
+  effect.execute_action = create_proc_action<skulking_predator_t>( "skulking_predator", effect );
 }
 
 /** Memory of Past Sins
@@ -678,19 +691,26 @@ void memory_of_past_sins( special_effect_t& effect )
 {
   struct shattered_psyche_damage_t : public generic_proc_t
   {
-    double damage_amp = 0;
-
     shattered_psyche_damage_t( const special_effect_t& e)
       : generic_proc_t( e, "shattered_psyche", 344664 )
     {
       callbacks = false;
     }
 
-    double action_multiplier() const override
+    double composite_target_da_multiplier( player_t* t ) const override
     {
-      double m = proc_spell_t::action_multiplier();
-      m *= 1.0 + damage_amp;
+      double m = proc_spell_t::composite_target_da_multiplier( t );
+      auto td = player->get_target_data( t );
+      m *= 1.0 + td->debuff.shattered_psyche->stack_value();
       return m;
+    }
+
+    void impact( action_state_t* s ) override
+    {
+      proc_spell_t::impact( s );
+
+      auto td = player->get_target_data( s->target );
+      td->debuff.shattered_psyche->trigger();
     }
   };
 
@@ -706,12 +726,9 @@ void memory_of_past_sins( special_effect_t& effect )
 
     void execute( action_t* a, action_state_t* trigger_state ) override
     {
-      auto td = a->player->get_target_data( trigger_state->target );
-      damage->damage_amp = td->debuff.shattered_psyche->stack_value();
       damage->target = trigger_state->target;
       damage->execute();
       buff->decrement();
-      td->debuff.shattered_psyche->trigger();
     }
   };
 
@@ -736,6 +753,7 @@ void memory_of_past_sins( special_effect_t& effect )
   auto callback = new shattered_psyche_cb_t( *cb_driver, damage, buff );
   callback->initialize();
   callback->deactivate();
+
   buff->set_stack_change_callback( [ callback ]( buff_t*, int old, int new_ ) {
     if ( old == 0 )
       callback->activate();
@@ -970,6 +988,52 @@ void satchel_of_misbegotten_minions( special_effect_t& effect )
   effect.execute_action = create_proc_action<misbegotten_minion_t>( "misbegotten_minion", effect );
 
   new dbc_proc_callback_t( effect.player, effect );
+}
+
+/**
+ * Mistcaller Ocarina
+ * id=330067 driver #1 (versatility)
+ * id=332299 driver #2 (crit)
+ * id=332300 driver #3 (haste)
+ * id=332301 driver #4 (mastery)
+ * id=330132 buff #1 (versatility)
+ * id=332077 buff #2 (crit)
+ * id=332078 buff #3 (haste)
+ * id=332079 buff #4 (mastery)
+ */
+void mistcaller_ocarina( special_effect_t& effect )
+{
+  using id_pair_t = std::pair<unsigned, unsigned>;
+  static constexpr id_pair_t spells[] = {
+    { 330067, 330132 }, // versatility
+    { 332299, 332077 }, // crit
+    { 332300, 332078 }, // haste
+    { 332301, 332079 }, // mastery
+  };
+  auto it = range::find( spells, effect.spell_id, &id_pair_t::first );
+  if ( it == range::end( spells ) )
+    return; // Unknown driver spell, "disable" the trinket
+
+  // Assume the player keeps the buff up on its own and disable some stuff
+  effect.type = SPECIAL_EFFECT_EQUIP;
+  effect.cooldown_ = 0_ms;
+  effect.duration_ = 0_ms;
+
+  const spell_data_t* buff_spell = effect.player->find_spell( it->second );
+  const std::string buff_name = util::tokenize_fn( buff_spell->name_cstr() );
+
+  stat_buff_t* buff = debug_cast<stat_buff_t*>( buff_t::find( effect.player, buff_name ) );
+  if ( !buff )
+  {
+    double amount = effect.driver()->effectN( 1 ).average( effect.item );
+
+    buff = make_buff<stat_buff_t>( effect.player, buff_name, buff_spell );
+    for ( auto& s : buff->stats )
+      s.amount = amount;
+
+    effect.custom_buff = buff;
+    new dbc_proc_callback_t( effect.player, effect );
+  }
 }
 
 /**Unbound Changeling
@@ -1819,6 +1883,10 @@ void register_special_effects()
     unique_gear::register_special_effect( 329840, items::bloodspattered_scale );
     unique_gear::register_special_effect( 331523, items::shadowgrasp_totem );
     unique_gear::register_special_effect( 348135, items::hymnal_of_the_path );
+    unique_gear::register_special_effect( 330067, items::mistcaller_ocarina );
+    unique_gear::register_special_effect( 332299, items::mistcaller_ocarina );
+    unique_gear::register_special_effect( 332300, items::mistcaller_ocarina );
+    unique_gear::register_special_effect( 332301, items::mistcaller_ocarina );
 
     // Runecarves
     unique_gear::register_special_effect( 338477, items::echo_of_eonar );

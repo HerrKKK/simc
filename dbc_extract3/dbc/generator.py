@@ -1266,6 +1266,10 @@ class SpellDataGenerator(DataGenerator):
          331537,
          # Hymnal of the Path damage/healing spells
          348141, 348140,
+         # Mistcaller Ocarina
+         330132, 332077, 332078, 332079,
+         # Skulking Predator leap/damage
+         345020,
         ),
 
         # Warrior:
@@ -1434,6 +1438,7 @@ class SpellDataGenerator(DataGenerator):
             ( 346112, 0 ),          # Shadow Weaving Mastery Pet Proc spell
             ( 336167, 0 ),          # Painbreaker Psalm Insanity generation
             ( 341207, 0 ),          # Dark Thoughts Buff
+            ( 344753, 0 ),          # Eternal Call to the Void Parent spell
             # Holy Priest
             ( 196809, 5 ),          # Healing Light (Divine Image legendary pet spell)
             ( 196810, 5 ),          # Dazzling Light (Divine Image legendary pet spell)

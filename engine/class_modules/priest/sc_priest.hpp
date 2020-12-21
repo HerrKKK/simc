@@ -39,6 +39,7 @@ struct ascended_eruption_t;
 struct wrathful_faerie_t;
 struct wrathful_faerie_fermata_t;
 struct psychic_link_t;
+struct eternal_call_to_the_void_t;
 }  // namespace spells
 namespace heals
 {
@@ -374,6 +375,7 @@ public:
     propagate_const<actions::spells::wrathful_faerie_t*> wrathful_faerie;
     propagate_const<actions::spells::wrathful_faerie_fermata_t*> wrathful_faerie_fermata;
     propagate_const<actions::spells::ascended_eruption_t*> ascended_eruption;
+    propagate_const<actions::spells::eternal_call_to_the_void_t*> eternal_call_to_the_void;
   } background_actions;
 
   // Items
@@ -1350,8 +1352,11 @@ struct priest_spell_t : public priest_action_t<spell_t>
         priest().buffs.twist_of_fate->trigger();
       }
 
-      if ( priest().specialization() == PRIEST_SHADOW && s->result_type == result_amount_type::DMG_DIRECT &&
-           s->result_amount > 0 )
+      // Wrathful Faerie works for any direct attacks by anyone, bugging this for now
+      // TODO: maybe rework this to just be a buff that gives insanity every tick instead?
+      // https://github.com/SimCMinMax/WoW-BugTracker/issues/777
+      if ( priest().specialization() == PRIEST_SHADOW &&
+           ( s->result_type == result_amount_type::DMG_DIRECT || priest().bugs ) && s->result_amount > 0 )
       {
         const priest_td_t* td = find_td( s->target );
         if ( td && td->buffs.wrathful_faerie->check() )

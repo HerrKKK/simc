@@ -2631,15 +2631,14 @@ private:
     }
   };
 
-  struct stomp_tick_t : public melee_attack_t
+  struct stomp_t : public melee_attack_t
   {
-    stomp_tick_t( niuzao_pet_t* p ) : melee_attack_t( "stomp_tick", p, p->o()->passives.stomp )
+    stomp_t( niuzao_pet_t* p, const std::string& options_str ) : melee_attack_t( "stomp", p, p->o()->passives.stomp )
     {
-      aoe  = -1;
-      dual = direct_tick = background = may_crit = may_miss = true;
-      range                                                 = radius;
-      radius                                                = 0;
-      cooldown->duration                                    = timespan_t::zero();
+      parse_options( options_str );
+
+      aoe          = -1;
+      may_crit     = true;
       // technically the base damage doesn't split. practically, the base damage
       // is ass and totally irrelevant. the r2 hot trub effect (which does
       // split) is by far the dominating factor in any aoe sim.
@@ -2659,16 +2658,17 @@ private:
       niuzao_pet_t* p = static_cast<niuzao_pet_t*>( player );
 
       auto purify_amount = p->o()->buff.recent_purifies->value();
-      auto actual_damage = purify_amount * p->o()->spec.invoke_niuzao_2->effectN(1).percent();
+      auto actual_damage = purify_amount * p->o()->spec.invoke_niuzao_2->effectN( 1 ).percent();
       b += actual_damage;
-      p->o()->sim->print_debug("applying bonus purify damage (original: {}, reduced: {})", purify_amount, actual_damage);
+      p->o()->sim->print_debug( "applying bonus purify damage (original: {}, reduced: {})", purify_amount,
+                                actual_damage );
 
       return b;
     }
 
     double action_multiplier() const override
     {
-      double am = melee_attack_t::action_multiplier();
+      double am       = melee_attack_t::action_multiplier();
       niuzao_pet_t* p = static_cast<niuzao_pet_t*>( player );
 
       if ( p->o()->conduit.walk_with_the_ox->ok() )
@@ -2677,33 +2677,14 @@ private:
       return am;
     }
 
-    void execute() override {
+    void execute() override
+    {
       melee_attack_t::execute();
       // canceling the purify buff goes here so that in aoe all hits see the
       // purified damage that needs to be split. this occurs after all damage
       // has been dealt
       niuzao_pet_t* p = static_cast<niuzao_pet_t*>( player );
       p->o()->buff.recent_purifies->cancel();
-    }
-  };
-
-  struct stomp_t : public spell_t
-  {
-    stomp_t( niuzao_pet_t* p, const std::string& options_str ) : spell_t( "stomp", p, p->o()->passives.stomp )
-    {
-      parse_options( options_str );
-
-      // for future compatibility, we may want to grab Niuzao and our tick spell and build this data from those (Niuzao
-      // summon duration, for example)
-      dot_duration = p->o()->spec.invoke_niuzao->duration();
-      hasted_ticks = may_miss = false;
-      tick_zero = dynamic_tick_action = true;                                      // trigger tick when t == 0
-      base_tick_time                  = p->o()->passives.stomp->cooldown();        // trigger a tick every second
-      cooldown->duration              = p->o()->spec.invoke_niuzao->duration();  // we're done after 45 seconds
-      attack_power_mod.direct         = 0.0;
-      attack_power_mod.tick           = 0.0;
-
-      tick_action = new stomp_tick_t( p );
     }
   };
 
@@ -10602,6 +10583,8 @@ void monk_t::create_buffs()
   // General
   buff.charred_passions    = make_buff( this, "charred_passions", find_spell( 338140 ) );
   buff.invokers_delight = make_buff( this, "invokers_delight", legendary.invokers_delight->effectN( 1 ).trigger() )
+      ->set_default_value_from_effect_type( A_HASTE_ALL )
+      ->set_pct_buff_type( STAT_PCT_BUFF_HASTE )
       ->add_invalidate( CACHE_ATTACK_HASTE )
       ->add_invalidate( CACHE_HASTE )
       ->add_invalidate( CACHE_SPELL_HASTE );
@@ -10995,9 +10978,6 @@ double shared_composite_haste_modifiers( const monk_t& p, double h )
       ++effect_index;
     }
   }
-
-  if ( p.buff.invokers_delight->up() )
-    h *= 1.0 / ( 1.0 + p.buff.invokers_delight->data().effectN( 1 ).percent() );
 
   return h;
 }
@@ -11962,7 +11942,7 @@ void monk_t::apl_combat_brewmaster()
   def->add_talent( this, "Chi Burst" );
   def->add_talent( this, "Chi Wave" );
   def->add_action( this, "Spinning Crane Kick", "if=active_enemies>=3&cooldown.keg_smash.remains>gcd&(energy+(energy.regen*(cooldown.keg_smash.remains+execute_time)))>=65&(!talent.spitfire.enabled|!runeforge.charred_passions.equipped)" );
-  def->add_action( this, "Tiger Palm", "if=!talent.blackout_combo.enabled&cooldown.keg_smash.remains>gcd&(energy+(energy.regen*(cooldown.keg_smash.remains+gcd)))>=65" );
+  def->add_action( this, "Tiger Palm", "if=!talent.blackout_combo&cooldown.keg_smash.remains>gcd&(energy+(energy.regen*(cooldown.keg_smash.remains+gcd)))>=65" );
 
   for ( size_t i = 0; i < racial_actions.size(); i++ )
   {
@@ -12010,8 +11990,8 @@ void monk_t::apl_combat_windwalker()
       "if=chi.max-chi>=1&(energy.time_to_max<1|cooldown.serenity.remains<2|energy.time_to_max<4&cooldown.fists_of_fury.remains<1.5|cooldown.weapons_of_order.remains<2)" );
   def->add_action( this, "Tiger Palm",
       "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&chi.max-chi>=2&(energy.time_to_max<1|cooldown.serenity.remains<2|energy.time_to_max<4&cooldown.fists_of_fury.remains<1.5|cooldown.weapons_of_order.remains<2)" );
-  def->add_action( "call_action_list,name=cd_sef,if=!talent.serenity.enabled" );
-  def->add_action( "call_action_list,name=cd_serenity,if=talent.serenity.enabled" );
+  def->add_action( "call_action_list,name=cd_sef,if=!talent.serenity" );
+  def->add_action( "call_action_list,name=cd_serenity,if=talent.serenity" );
   def->add_action( "call_action_list,name=st,if=active_enemies<3" );
   def->add_action( "call_action_list,name=aoe,if=active_enemies>=3" );
 
@@ -12026,23 +12006,23 @@ void monk_t::apl_combat_windwalker()
   // AoE
   aoe->add_talent( this, "Whirling Dragon Punch" );
   aoe->add_talent( this, "Energizing Elixir", "if=chi.max-chi>=2&energy.time_to_max>2|chi.max-chi>=4" );
-  aoe->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&(buff.dance_of_chiji.up|debuff.bonedust_brew.up)" );
+  aoe->add_action( this, "Spinning Crane Kick", "if=combo_strike&(buff.dance_of_chiji.up|debuff.bonedust_brew.up)" );
   aoe->add_action( this, "Fists of Fury", "if=energy.time_to_max>execute_time|chi.max-chi<=1" );
   aoe->add_action( this, "Rising Sun Kick",
-      "target_if=min:debuff.mark_of_the_crane.remains,if=(talent.whirling_dragon_punch.enabled&cooldown.rising_sun_kick.duration>cooldown.whirling_dragon_punch.remains+4)&(cooldown.fists_of_fury.remains>3|chi>=5)" );
+      "target_if=min:debuff.mark_of_the_crane.remains,if=(talent.whirling_dragon_punch&cooldown.rising_sun_kick.duration>cooldown.whirling_dragon_punch.remains+4)&(cooldown.fists_of_fury.remains>3|chi>=5)" );
   aoe->add_talent( this, "Rushing Jade Wind", "if=buff.rushing_jade_wind.down" );
   aoe->add_action( this, "Spinning Crane Kick",
-      "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&((cooldown.bonedust_brew.remains>2&(chi>3|cooldown.fists_of_fury.remains>6)&(chi>=5|cooldown.fists_of_fury.remains>2))|energy.time_to_max<=3)" );
+      "if=combo_strike&((cooldown.bonedust_brew.remains>2&(chi>3|cooldown.fists_of_fury.remains>6)&(chi>=5|cooldown.fists_of_fury.remains>2))|energy.time_to_max<=3)" );
   aoe->add_action( this, "Expel Harm", "if=chi.max-chi>=1" );
   aoe->add_talent( this, "Fist of the White Tiger", "target_if=min:debuff.mark_of_the_crane.remains,if=chi.max-chi>=3" );
   aoe->add_talent( this, "Chi Burst", "if=chi.max-chi>=2" );
   aoe->add_action( this, "Crackling Jade Lightning", "if=buff.the_emperors_capacitor.stack>19&energy.time_to_max>execute_time-1&cooldown.fists_of_fury.remains>execute_time" );
   aoe->add_action( this, "Tiger Palm",
-      "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=chi.max-chi>=2&(!talent.hit_combo.enabled|combo_strike)" );
+      "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=chi.max-chi>=2&(!talent.hit_combo|combo_strike)" );
   aoe->add_talent( this, "Chi Wave", "if=combo_strike" );
   aoe->add_action( this, "Flying Serpent Kick", "if=buff.bok_proc.down,interrupt=1" );
   aoe->add_action( this, "Blackout Kick",
-      "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&(buff.bok_proc.up|talent.hit_combo.enabled&prev_gcd.1.tiger_palm&chi=2&cooldown.fists_of_fury.remains<3|chi.max-chi<=1&prev_gcd.1.spinning_crane_kick&energy.time_to_max<3)" );
+      "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&(buff.bok_proc.up|talent.hit_combo&prev_gcd.1.tiger_palm&chi=2&cooldown.fists_of_fury.remains<3|chi.max-chi<=1&prev_gcd.1.spinning_crane_kick&energy.time_to_max<3)" );
 
   // Serenity Cooldowns
   cd_serenity->add_action( "variable,name=serenity_burst,op=set,value=cooldown.serenity.remains<1|pet.xuen_the_white_tiger.active&cooldown.serenity.remains>30|fight_remains<20" );
@@ -12149,7 +12129,7 @@ void monk_t::apl_combat_windwalker()
   // Serenity
   serenity->add_action( this, "Fists of Fury", "if=buff.serenity.remains<1" );
 
-  // Storm, Earth, and Fire on-use trinkets
+  // Serenity on-use trinkets
   for ( size_t i = 0; i < items.size(); i++ )
   {
     if ( items[ i ].has_special_effect( SPECIAL_EFFECT_SOURCE_ITEM, SPECIAL_EFFECT_USE ) )
@@ -12158,26 +12138,26 @@ void monk_t::apl_combat_windwalker()
     }
   }
 
-  serenity->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&(active_enemies>=3|active_enemies>1&!cooldown.rising_sun_kick.up)" );
+  serenity->add_action( this, "Spinning Crane Kick", "if=combo_strike&(active_enemies>=3|active_enemies>1&!cooldown.rising_sun_kick.up)" );
   serenity->add_action( this, "Rising Sun Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike" );
   serenity->add_action( this, "Fists of Fury", "if=active_enemies>=3" );
-  serenity->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&buff.dance_of_chiji.up" );
-  serenity->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=(combo_strike|!talent.hit_combo.enabled)&buff.weapons_of_order_ww.up&cooldown.rising_sun_kick.remains>2" );
-  serenity->add_talent( this, "Fist of the White Tiger", "interrupt=1" );
-  serenity->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&debuff.bonedust_brew.up" );
+  serenity->add_action( this, "Spinning Crane Kick", "if=combo_strike&buff.dance_of_chiji.up" );
+  serenity->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&buff.weapons_of_order_ww.up&cooldown.rising_sun_kick.remains>2" );
+  serenity->add_action( this, "Fists of Fury", "interrupt_if=!cooldown.rising_sun_kick.up" );
+  serenity->add_action( this, "Spinning Crane Kick", "if=combo_strike&debuff.bonedust_brew.up" );
   serenity->add_talent( this, "Fist of the White Tiger", "target_if=min:debuff.mark_of_the_crane.remains,if=chi<3" );
-  serenity->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike|!talent.hit_combo.enabled" );
+  serenity->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike|!talent.hit_combo" );
   serenity->add_action( this, "Spinning Crane Kick" );
 
   // Weapons of Order
-  weapons_of_order->add_action( "call_action_list,name=cd_sef,if=!talent.serenity.enabled" );
-  weapons_of_order->add_action( "call_action_list,name=cd_serenity,if=talent.serenity.enabled" );
+  weapons_of_order->add_action( "call_action_list,name=cd_sef,if=!talent.serenity" );
+  weapons_of_order->add_action( "call_action_list,name=cd_serenity,if=talent.serenity" );
   weapons_of_order->add_talent( this, "Energizing Elixir", "if=chi.max-chi>=2&energy.time_to_max>3" );
   weapons_of_order->add_action( this, "Rising Sun Kick", "target_if=min:debuff.mark_of_the_crane.remains" );
-  weapons_of_order->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&buff.dance_of_chiji.up" );
+  weapons_of_order->add_action( this, "Spinning Crane Kick", "if=combo_strike&buff.dance_of_chiji.up" );
   weapons_of_order->add_action( this, "Fists of Fury", "if=active_enemies>=2&buff.weapons_of_order_ww.remains<1" );
   weapons_of_order->add_talent( this, "Whirling Dragon Punch", "if=active_enemies>=2" );
-  weapons_of_order->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&active_enemies>=3&buff.weapons_of_order_ww.up" );
+  weapons_of_order->add_action( this, "Spinning Crane Kick", "if=combo_strike&active_enemies>=3&buff.weapons_of_order_ww.up" );
   weapons_of_order->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&active_enemies<=2" );
   weapons_of_order->add_talent( this, "Whirling Dragon Punch" );
   weapons_of_order->add_action( this, "Fists of Fury", "interrupt=1,if=buff.storm_earth_and_fire.up&raid_event.adds.in>cooldown.fists_of_fury.duration*0.6" );
@@ -12185,7 +12165,7 @@ void monk_t::apl_combat_windwalker()
   weapons_of_order->add_talent( this, "Fist of the White Tiger", "target_if=min:debuff.mark_of_the_crane.remains,if=chi<3" );
   weapons_of_order->add_action( this, "Expel Harm", "if=chi.max-chi>=1" );
   weapons_of_order->add_talent( this, "Chi Burst", "if=chi.max-chi>=(1+active_enemies>1)" );
-  weapons_of_order->add_action( this, "Tiger Palm", "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=(!talent.hit_combo.enabled|combo_strike)&chi.max-chi>=2" );
+  weapons_of_order->add_action( this, "Tiger Palm", "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=(!talent.hit_combo|combo_strike)&chi.max-chi>=2" );
   weapons_of_order->add_talent( this, "Chi Wave" );
   weapons_of_order->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=chi>=3|buff.weapons_of_order_ww.up" );
   weapons_of_order->add_action( this, "Flying Serpent Kick", "interrupt=1" );
@@ -12193,10 +12173,10 @@ void monk_t::apl_combat_windwalker()
   // Single Target
   st->add_talent( this, "Whirling Dragon Punch", "if=raid_event.adds.in>cooldown.whirling_dragon_punch.duration*0.8|raid_event.adds.up" );
   st->add_talent( this, "Energizing Elixir", "if=chi.max-chi>=2&energy.time_to_max>3|chi.max-chi>=4&(energy.time_to_max>2|!prev_gcd.1.tiger_palm)" );
-  st->add_action( this, "Spinning Crane Kick", "if=(!talent.hit_combo.enabled&conduit.calculated_strikes.enabled|combo_strike)&buff.dance_of_chiji.up&(raid_event.adds.in>buff.dance_of_chiji.remains-2|raid_event.adds.up)" );
-  st->add_action( this, "Rising Sun Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=cooldown.serenity.remains>1|!talent.serenity.enabled" );
+  st->add_action( this, "Spinning Crane Kick", "if=combo_strike&buff.dance_of_chiji.up&(raid_event.adds.in>buff.dance_of_chiji.remains-2|raid_event.adds.up)" );
+  st->add_action( this, "Rising Sun Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=cooldown.serenity.remains>1|!talent.serenity" );
   st->add_action( this, "Fists of Fury", "if=(raid_event.adds.in>cooldown.fists_of_fury.duration*0.8|raid_event.adds.up)&(energy.time_to_max>execute_time-1|chi.max-chi<=1|buff.storm_earth_and_fire.remains<execute_time+1)|fight_remains<execute_time+1" );
-  st->add_action( this, "Crackling Jade Lightning", "if=buff.the_emperors_capacitor.stack>19&energy.time_to_max>execute_time-1&cooldown.rising_sun_kick.remains>execute_time|buff.the_emperors_capacitor.stack>14&(cooldown.serenity.remains<5&talent.serenity.enabled|cooldown.weapons_of_order.remains<5&covenant.kyrian|fight_remains<5)" );
+  st->add_action( this, "Crackling Jade Lightning", "if=buff.the_emperors_capacitor.stack>19&energy.time_to_max>execute_time-1&cooldown.rising_sun_kick.remains>execute_time|buff.the_emperors_capacitor.stack>14&(cooldown.serenity.remains<5&talent.serenity|cooldown.weapons_of_order.remains<5&covenant.kyrian|fight_remains<5)" );
   st->add_talent( this, "Rushing Jade Wind", "if=buff.rushing_jade_wind.down&active_enemies>1" );
   st->add_talent( this, "Fist of the White Tiger", "target_if=min:debuff.mark_of_the_crane.remains,if=chi<3" );
   st->add_action( this, "Expel Harm", "if=chi.max-chi>=1" );
@@ -12205,7 +12185,7 @@ void monk_t::apl_combat_windwalker()
   st->add_action( this, "Tiger Palm", "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=combo_strike&chi.max-chi>=2&buff.storm_earth_and_fire.down" );
   st->add_action( this, "Spinning Crane Kick", "if=buff.chi_energy.stack>30-5*active_enemies&buff.storm_earth_and_fire.down&(cooldown.rising_sun_kick.remains>2&cooldown.fists_of_fury.remains>2|cooldown.rising_sun_kick.remains<3&cooldown.fists_of_fury.remains>3&chi>3|cooldown.rising_sun_kick.remains>3&cooldown.fists_of_fury.remains<3&chi>4|chi.max-chi<=1&energy.time_to_max<2)|buff.chi_energy.stack>10&fight_remains<7" );
   st->add_action( this, "Blackout Kick",
-                  "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&(talent.serenity.enabled&cooldown.serenity.remains<3|cooldown.rising_sun_kick.remains>1&cooldown.fists_of_fury.remains>1|cooldown.rising_sun_kick.remains<3&cooldown.fists_of_fury.remains>3&chi>2|cooldown.rising_sun_kick.remains>3&cooldown.fists_of_fury.remains<3&chi>3|chi>5|buff.bok_proc.up)" );
+                  "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&(talent.serenity&cooldown.serenity.remains<3|cooldown.rising_sun_kick.remains>1&cooldown.fists_of_fury.remains>1|cooldown.rising_sun_kick.remains<3&cooldown.fists_of_fury.remains>3&chi>2|cooldown.rising_sun_kick.remains>3&cooldown.fists_of_fury.remains<3&chi>3|chi>5|buff.bok_proc.up)" );
   st->add_action( this, "Tiger Palm", "target_if=min:debuff.mark_of_the_crane.remains+(debuff.recently_rushing_tiger_palm.up*20),if=combo_strike&chi.max-chi>=2" );
   st->add_action( this, "Flying Serpent Kick", "interrupt=1" );
   st->add_action( this, "Blackout Kick", "target_if=min:debuff.mark_of_the_crane.remains,if=combo_strike&cooldown.fists_of_fury.remains<3&chi=2&prev_gcd.1.tiger_palm&energy.time_to_50<1" );
