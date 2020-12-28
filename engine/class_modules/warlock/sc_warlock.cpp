@@ -690,6 +690,10 @@ double warlock_t::composite_player_pet_damage_multiplier( const action_state_t* 
 double warlock_t::composite_spell_crit_chance() const
 {
   double sc = player_t::composite_spell_crit_chance();
+
+  if ( buffs.dark_soul_instability->check() )
+    sc += buffs.dark_soul_instability->check_value();
+
   return sc;
 }
 
@@ -716,6 +720,10 @@ double warlock_t::composite_melee_haste() const
 double warlock_t::composite_melee_crit_chance() const
 {
   double mc = player_t::composite_melee_crit_chance();
+
+  if ( buffs.dark_soul_instability->check() )
+    mc += buffs.dark_soul_instability->check_value();
+
   return mc;
 }
 
@@ -1139,6 +1147,11 @@ std::string warlock_t::default_food() const
 std::string warlock_t::default_rune() const
 {
   return ( true_level >= 60 ) ? "veiled" : "disabled";
+}
+
+std::string warlock_t::default_temporary_enchant() const
+{
+  return ( true_level >= 60 ) ? "main_hand:shadowcore_oil" : "disabled";
 }
 
 void warlock_t::apl_global_filler()

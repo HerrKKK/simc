@@ -23,6 +23,11 @@
 // - Test Frost's damage with atypical weapon setups (single 1H/OH, etc.)
 //     on abilities with the 2H penalty or combined AP type
 // - Figure out what to do with Obliterate/Frost Strike strikes, reporting, etc.
+// TOCHECK: accurate spawn/travel delay timers for all dynamic pets
+// - DRW, Magus of the dead, Bloodworms have no delay at all
+// - Army ghoul, Apoc ghoul, Raise dead ghoul have a different delay (currently estimated at 4.5s with a 0.1 stddev)
+//   TODO: even more variable travel time for apoc/army based on distance from boss on spawn?
+// - Gargoyle and Reanimated Shambler have their own delays too
 
 #include "simulationcraft.hpp"
 #include "player/pet_spawner.hpp"
@@ -556,13 +561,7 @@ public:
     action_t* rune_of_sanguination;
 
     // Blood
-    action_t* mark_of_blood;
-    action_t* relish_in_blood;
-
-    // Frost
-    action_t* breath_of_sindragosa;
-    action_t* cold_heart;
-    action_t* inexorable_assault;
+    action_t* mark_of_blood_heal;
 
     // Unholy
     action_t* bursting_sores;
@@ -784,11 +783,8 @@ public:
     // Blood
     const spell_data_t* blood_shield;
     const spell_data_t* bone_shield;
-    const spell_data_t* relish_in_blood;
 
     // Frost
-    const spell_data_t* cold_heart_damage;
-    const spell_data_t* inexorable_assault_damage;
     const spell_data_t* murderous_efficiency_gain;
     const spell_data_t* rage_of_the_frozen_champion;
 
@@ -1065,7 +1061,7 @@ public:
   void      trigger_killing_machine( double chance, proc_t* proc, proc_t* wasted_proc );
   void      consume_killing_machine( proc_t* proc );
   void      trigger_runic_empowerment( double rpcost );
-  void      trigger_runic_corruption( double rpcost, double override_chance = -1.0, proc_t* proc = nullptr );
+  void      trigger_runic_corruption( proc_t* proc, double rpcost, double override_chance = -1.0 );
   void      trigger_festering_wound( const action_state_t* state, unsigned n_stacks = 1, proc_t* proc = nullptr );
   void      burst_festering_wound( player_t* target, unsigned n = 1 );
   void      bone_shield_handler( const action_state_t* ) const;
@@ -1570,10 +1566,12 @@ namespace pets {
 
 struct death_knight_pet_t : public pet_t
 {
-  bool use_auto_attack;
+  bool use_auto_attack, precombat_spawn;
+  double spawn_travel_duration, spawn_travel_stddev, precombat_spawn_adjust;
 
   death_knight_pet_t( death_knight_t* owner, const std::string& name, bool guardian = true, bool auto_attack = true, bool dynamic = true ) :
-    pet_t( owner -> sim, owner, name, guardian, dynamic ), use_auto_attack( auto_attack )
+    pet_t( owner -> sim, owner, name, guardian, dynamic ), use_auto_attack( auto_attack ),
+    spawn_travel_duration( 0 ), spawn_travel_stddev( 0 ), precombat_spawn( false ), precombat_spawn_adjust( 0 )
   {
     if ( auto_attack )
     {
@@ -1583,19 +1581,6 @@ struct death_knight_pet_t : public pet_t
 
   death_knight_t* o() const
   { return debug_cast<death_knight_t*>( owner ); }
-
-  void init_action_list() override
-  {
-    action_priority_list_t* def = get_action_priority_list( "default" );
-    if ( use_auto_attack )
-    {
-      def -> add_action( "auto_attack" );
-    }
-
-    pet_t::init_action_list();
-  }
-
-  action_t* create_action( util::string_view name, const std::string& options_str ) override;
 
   // DK pets have their own base attack speed
   double composite_melee_speed() const override
@@ -1649,6 +1634,96 @@ struct death_knight_pet_t : public pet_t
     }
 
     return haste;
+  }
+
+  // Standard Death Knight pet actions
+
+  struct auto_attack_t : public melee_attack_t
+  {
+    auto_attack_t( death_knight_pet_t* player ) : melee_attack_t( "auto_attack", player )
+    {
+      assert( player -> main_hand_weapon.type != WEAPON_NONE );
+      player -> main_hand_attack = player -> create_auto_attack();
+      trigger_gcd = 0_ms;
+    }
+
+    void execute() override
+    { player -> main_hand_attack -> schedule_execute(); }
+
+    bool ready() override
+    {
+      if ( player -> is_moving() ) return false;
+      return ( player -> main_hand_attack -> execute_event == nullptr );
+    }
+  };
+
+  struct spawn_travel_t : public action_t
+  {
+    bool executed;
+
+    spawn_travel_t( death_knight_pet_t* p ) : action_t( ACTION_OTHER, "spawn_travel", p ),
+      executed( false )
+    {
+      may_miss = false;
+      quiet    = true;
+    }
+
+    result_e calculate_result( action_state_t* /* s */ ) const override
+    { return RESULT_HIT; }
+
+    block_result_e calculate_block_result( action_state_t* ) const override
+    { return BLOCK_RESULT_UNBLOCKED; }
+
+    void execute() override
+    {
+      action_t::execute();
+      executed = true;
+      debug_cast<death_knight_pet_t*>( player ) -> precombat_spawn = false;
+    }
+
+    void cancel() override
+    {
+      action_t::cancel();
+      executed = false;
+    }
+
+    timespan_t execute_time() const override
+    {
+      death_knight_pet_t* p = debug_cast<death_knight_pet_t*>( player );
+      double mean_duration = p -> spawn_travel_duration;
+
+      if ( p -> precombat_spawn )
+        mean_duration -= p -> precombat_spawn_adjust;
+      // Don't bother gaussing null delays
+      if ( mean_duration <= 0 )
+        return 0_ms;
+
+      return timespan_t::from_seconds( rng().gauss( mean_duration, p -> spawn_travel_stddev ) );
+    }
+
+    bool ready() override
+    {
+      return !executed;
+    }
+  };
+
+  action_t* create_action( util::string_view name, const std::string& options_str )
+  {
+    if ( name == "auto_attack" ) return new auto_attack_t( this );
+    if ( name == "spawn_travel" ) return new spawn_travel_t( this );
+
+    return pet_t::create_action( name, options_str );
+  }
+
+  void init_action_list() override
+  {
+    action_priority_list_t* def = get_action_priority_list( "default" );
+    if ( spawn_travel_duration )
+      def -> add_action( "spawn_travel" );
+    if ( use_auto_attack )
+      def -> add_action( "auto_attack" );
+
+    pet_t::init_action_list();
   }
 };
 
@@ -1758,29 +1833,6 @@ struct pet_melee_attack_t : public pet_action_t<T_PET, melee_attack_t>
 };
 
 // ==========================================================================
-// Generalized Auto Attack Action
-// ==========================================================================
-
-struct auto_attack_t : public melee_attack_t
-{
-  auto_attack_t( death_knight_pet_t* player ) : melee_attack_t( "auto_attack", player )
-  {
-    assert( player -> main_hand_weapon.type != WEAPON_NONE );
-    player -> main_hand_attack = player -> create_auto_attack();
-    trigger_gcd = 0_ms;
-  }
-
-  void execute() override
-  { player -> main_hand_attack -> schedule_execute(); }
-
-  bool ready() override
-  {
-    if ( player -> is_moving() ) return false;
-    return ( player -> main_hand_attack -> execute_event == nullptr );
-  }
-};
-
-// ==========================================================================
 // Base Death Knight Pet Spell
 // ==========================================================================
 
@@ -1797,18 +1849,6 @@ struct pet_spell_t : public pet_action_t<T_PET, spell_t>
     this -> hasted_ticks  = false;
   }
 };
-
-// ==========================================================================
-// Base Death Knight Pet Method Definitions
-// ==========================================================================
-
-action_t* death_knight_pet_t::create_action( util::string_view name,
-                                       const std::string& options_str )
-{
-  if ( name == "auto_attack" ) return new auto_attack_t( this );
-
-  return pet_t::create_action( name, options_str );
-}
 
 // ==========================================================================
 // Specialized Death Knight Pet Actions
@@ -1890,6 +1930,10 @@ struct base_ghoul_pet_t : public death_knight_pet_t
     death_knight_pet_t( owner, name, guardian, true, dynamic )
   {
     main_hand_weapon.swing_time = 2.0_s;
+
+    // Army ghouls, apoc ghouls and raise dead ghoul all share the same spawn/travel animation lock
+    spawn_travel_duration = 4.5;
+    spawn_travel_stddev = 0.1;
   }
 
   attack_t* create_auto_attack() override
@@ -1976,6 +2020,10 @@ struct ghoul_pet_t : public base_ghoul_pet_t
   {
     gnaw_cd = get_cooldown( "gnaw" );
     gnaw_cd -> duration = owner -> spell.pet_gnaw -> cooldown();
+
+    // With a permanent pet, make sure that the precombat spawn ignores the spawn/travel delay
+    if ( owner -> spec.raise_dead_2 )
+      precombat_spawn_adjust = spawn_travel_duration;
   }
 
   attack_t* create_auto_attack() override
@@ -2129,45 +2177,6 @@ struct gargoyle_pet_t : public death_knight_pet_t
 {
   buff_t* dark_empowerment;
 
-  struct travel_t : public action_t
-  {
-    bool executed;
-
-    travel_t( player_t* player ) :
-      action_t( ACTION_OTHER, "travel", player ),
-      executed( false )
-    {
-      may_miss = false;
-      dual = true;
-    }
-
-    result_e calculate_result( action_state_t* /* s */ ) const override
-    { return RESULT_HIT; }
-
-    block_result_e calculate_block_result( action_state_t* ) const override
-    { return BLOCK_RESULT_UNBLOCKED; }
-
-    void execute() override
-    {
-      action_t::execute();
-      executed = true;
-    }
-
-    void cancel() override
-    {
-      action_t::cancel();
-      executed = false;
-    }
-
-    // ~3 seconds seems to be the optimal initial delay
-    // FIXME: Verify if behavior still exists on 5.3 PTR
-    timespan_t execute_time() const override
-    { return timespan_t::from_seconds( const_cast<travel_t*>( this ) -> rng().gauss( 2.9, 0.2 ) ); }
-
-    bool ready() override
-    { return ! executed; }
-  };
-
   struct gargoyle_strike_t : public pet_spell_t<gargoyle_pet_t>
   {
     gargoyle_strike_t( gargoyle_pet_t* player, util::string_view options_str ) :
@@ -2181,6 +2190,9 @@ struct gargoyle_pet_t : public death_knight_pet_t
     death_knight_pet_t( owner, "gargoyle", true, false ), dark_empowerment( nullptr )
   {
     resource_regeneration = regen_type::DISABLED;
+
+    spawn_travel_duration = 2.9;
+    spawn_travel_stddev = 0.2;
   }
 
   void init_base_stats() override
@@ -2204,7 +2216,6 @@ struct gargoyle_pet_t : public death_knight_pet_t
     death_knight_pet_t::init_action_list();
 
     action_priority_list_t* def = get_action_priority_list( "default" );
-    def -> add_action( "travel" );
     def -> add_action( "Gargoyle Strike" );
   }
 
@@ -2218,7 +2229,6 @@ struct gargoyle_pet_t : public death_knight_pet_t
   action_t* create_action( util::string_view name, const std::string& options_str ) override
   {
     if ( name == "gargoyle_strike" ) return new gargoyle_strike_t( this, options_str );
-    if ( name == "travel"          ) return new travel_t( this );
 
     return death_knight_pet_t::create_action( name, options_str );
   }
@@ -2425,11 +2435,9 @@ struct dancing_rune_weapon_pet_t : public death_knight_pet_t
       blood_strike_rp_generation( p -> find_spell( 220890 ) -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER ) )
     {
       base_multiplier *= 1.0 + p -> o() -> spec.heart_strike_3 -> effectN( 1 ).percent();
-      const spell_data_t* blood_strike = p -> find_spell( 220890 );
 
       // DRW is still using an old spell called "Blood Strike" for the 5 additional RP generation on Heart Strike
-      blood_strike_rp_generation = blood_strike -> ok() ? blood_strike -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER ) :
-        p -> o() -> spec.heart_strike_2 -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER );
+      blood_strike_rp_generation = p -> find_spell( 220890 ) -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER );
     }
 
     int n_targets() const override
@@ -2587,11 +2595,6 @@ struct magus_pet_t : public death_knight_pet_t
     return td;
   }
 
-  // Magus of the dead has a special AI:
-  // Frostbolt has a 3s cooldown that doesn't seeem to be in spelldata
-  // It also applies a 4s snare on non-boss targets hit, and can't target an enemy affected by said snare
-  // Frostbolt is used on cooldown, and shadow bolt is used the rest of the time
-
   struct magus_spell_t : public pet_action_t<magus_pet_t, spell_t>
   {
     magus_spell_t( magus_pet_t* player, util::string_view name , const spell_data_t* spell, util::string_view options_str ) :
@@ -2610,7 +2613,8 @@ struct magus_pet_t : public death_knight_pet_t
     frostbolt_magus_t( magus_pet_t* player, const std::string& options_str ) :
       magus_spell_t( player, "frostbolt", player -> o() -> find_spell( 317792 ), options_str )
     {
-      // Frostbolt has a 3s cooldown, set in a manual hotfix
+      // If the target is immune to slows, frostbolt seems to be used at most every 3 seconds
+      cooldown -> duration = 3_s;
     }
 
     // Frostbolt applies a slowing debuff on non-boss targets
@@ -2665,12 +2669,15 @@ struct magus_pet_t : public death_knight_pet_t
     owner_coeff.ap_from_ap *= 1.06;
   }
 
+  // Magus of the dead Action Priority List:
+  // Frostbolt has a 3s cooldown that doesn't seeem to be in spelldata, and applies a 4s snare on non-boss enemies
+  // Frostbolt is used on cooldown and if the target isn't slowed by the debuff, and shadow bolt is used the rest of the time
   void init_action_list() override
   {
     death_knight_pet_t::init_action_list();
 
     action_priority_list_t* def = get_action_priority_list( "default" );
-    def -> add_action( "frostbolt" );
+    def -> add_action( "frostbolt" ); // Cooldown and debuff are handled in the action
     def -> add_action( "shadow_bolt" );
   }
 
@@ -2683,14 +2690,17 @@ struct magus_pet_t : public death_knight_pet_t
   }
 };
 
+// ==========================================================================
+// Reanimated Shambler (legendary)
+// ==========================================================================
+
 struct reanimated_shambler_pet_t : public death_knight_pet_t
 {
   struct necroblast_t : public pet_action_t<reanimated_shambler_pet_t, melee_attack_t>
   {
     necroblast_t( reanimated_shambler_pet_t* player ) :
       pet_action_t( player, "necroblast", player -> find_spell( 334851 ) )
-    {
-    }
+    { }
 
     void execute() override
     {
@@ -2707,53 +2717,13 @@ struct reanimated_shambler_pet_t : public death_knight_pet_t
 
   };
 
-  struct travel_t : public action_t
-  {
-    bool executed;
-
-    travel_t( player_t* player ) : action_t( ACTION_OTHER, "travel", player ), executed( false )
-    {
-      may_miss = false;
-      dual     = true;
-    }
-
-    result_e calculate_result( action_state_t* /* s */ ) const override
-    {
-      return RESULT_HIT;
-    }
-
-    block_result_e calculate_block_result( action_state_t* ) const override
-    {
-      return BLOCK_RESULT_UNBLOCKED;
-    }
-
-    void execute() override
-    {
-      action_t::execute();
-      executed = true;
-    }
-
-    void cancel() override
-    {
-      action_t::cancel();
-      executed = false;
-    }
-
-    timespan_t execute_time() const override
-    {
-      return timespan_t::from_seconds( const_cast<travel_t*>( this )->rng().gauss( 4.597, 0.3399 ) );
-    }
-
-    bool ready() override
-    {
-      return !executed;
-    }
-  };
-
   reanimated_shambler_pet_t( death_knight_t* owner ) :
     death_knight_pet_t( owner, "reanimated_shambler", true, false )
   {
     resource_regeneration = regen_type::DISABLED;
+
+    spawn_travel_duration = 4.597;
+    spawn_travel_stddev = 0.3399;
   }
 
   void init_base_stats() override
@@ -2768,7 +2738,6 @@ struct reanimated_shambler_pet_t : public death_knight_pet_t
     death_knight_pet_t::init_action_list();
 
     action_priority_list_t* def = get_action_priority_list( "default" );
-    def->add_action( "travel" );
     def->add_action( "necroblast" );
   }
 
@@ -2776,8 +2745,6 @@ struct reanimated_shambler_pet_t : public death_knight_pet_t
   {
     if ( name == "necroblast" )
       return new necroblast_t( this );
-    if ( name == "travel" )
-      return new travel_t( this );
 
     return death_knight_pet_t::create_action( name, options_str );
   }
@@ -3133,8 +3100,12 @@ struct blood_plague_t : public death_knight_disease_t
 
 struct frost_fever_t : public death_knight_disease_t
 {
+  int rp_generation;
+
   frost_fever_t( util::string_view name, death_knight_t* p, bool superstrain = false ) :
-    death_knight_disease_t( name, p, p -> spell.frost_fever )
+    death_knight_disease_t( name, p, p -> spell.frost_fever ),
+    rp_generation( ( as<int>( p -> spec.frost_fever -> effectN( 1 ).trigger()
+                     -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER ) ) ) )
   {
     ap_type = attack_power_type::WEAPON_BOTH;
 
@@ -3176,10 +3147,7 @@ struct frost_fever_t : public death_knight_disease_t
 
     if ( rng().roll( chance ) )
     {
-      p() -> resource_gain( RESOURCE_RUNIC_POWER,
-                            p() -> spec.frost_fever -> effectN( 1 ).trigger() -> effectN( 1 ).resource( RESOURCE_RUNIC_POWER ),
-                            p() -> gains.frost_fever,
-                            this );
+      p() -> resource_gain( RESOURCE_RUNIC_POWER, rp_generation, p() -> gains.frost_fever, this );
     }
   }
 };
@@ -3309,8 +3277,8 @@ struct frozen_pulse_t : public death_knight_spell_t
 
 struct inexorable_assault_damage_t : public death_knight_spell_t
 {
-  inexorable_assault_damage_t( death_knight_t* p ) :
-    death_knight_spell_t( "inexorable_assault", p, p -> spell.inexorable_assault_damage )
+  inexorable_assault_damage_t( util::string_view name, death_knight_t* p ) :
+    death_knight_spell_t( name, p, p -> find_spell( 253597 ) )
   {
     background = true;
   }
@@ -3510,7 +3478,7 @@ struct abomination_limb_damage_t : public death_knight_spell_t
           p() -> buffs.rime -> trigger( 1, buff_t::DEFAULT_VALUE(), 1.0 );
           break;
         case DEATH_KNIGHT_UNHOLY:
-          p() -> trigger_runic_corruption( 0, 1.0, p() -> procs.al_runic_corruption );
+          p() -> trigger_runic_corruption( p() -> procs.al_runic_corruption, 0, 1.0 );
           break;
         default:
           break;
@@ -3720,7 +3688,9 @@ struct army_of_the_dead_t : public death_knight_spell_t
       double duration_penalty = precombat_time - summon_interval;
       while ( duration_penalty >= 0 && n_ghoul < 8 )
       {
-        p() -> pets.army_ghouls.spawn( summon_duration - timespan_t::from_seconds( duration_penalty ), 1 );
+        auto pet = p() -> pets.army_ghouls.spawn( summon_duration - timespan_t::from_seconds( duration_penalty ), 1 ).front();
+        pet -> precombat_spawn_adjust = duration_penalty;
+        pet -> precombat_spawn = true;
         duration_penalty -= summon_interval;
         n_ghoul++;
       }
@@ -3745,7 +3715,10 @@ struct army_of_the_dead_t : public death_knight_spell_t
 
     if ( p() -> talent.army_of_the_damned -> ok() )
     {
-      p() -> pets.magus_of_the_dead.spawn( magus_duration - timespan_t::from_seconds( precombat_time ), 1 );
+      // Bug? Magus of the dead is summoned for the same duration as Army of the Dead even though Army of the Damned's tooltip states 15s.
+      timespan_t actual_magus_duration = p() -> bugs ? summon_duration : magus_duration;
+
+      p() -> pets.magus_of_the_dead.spawn( actual_magus_duration - timespan_t::from_seconds( precombat_time ), 1 );
     }
   }
 };
@@ -3916,8 +3889,8 @@ struct bonestorm_t : public death_knight_spell_t
 
 struct breath_of_sindragosa_tick_t: public death_knight_spell_t
 {
-  breath_of_sindragosa_tick_t( death_knight_t* p ):
-    death_knight_spell_t( "breath_of_sindragosa_tick", p, p -> talent.breath_of_sindragosa -> effectN( 1 ).trigger() )
+  breath_of_sindragosa_tick_t( util::string_view name, death_knight_t* p ):
+    death_knight_spell_t( name, p, p -> talent.breath_of_sindragosa -> effectN( 1 ).trigger() )
   {
     aoe = -1;
     background = true;
@@ -3932,6 +3905,12 @@ struct breath_of_sindragosa_tick_t: public death_knight_spell_t
       base_multiplier *= 0.98;
     }
   }
+
+  // Resource cost/loss handled by buff
+  double cost() const override
+  {
+    return 0;
+  }
 };
 
 struct breath_of_sindragosa_buff_t : public buff_t
@@ -3939,11 +3918,12 @@ struct breath_of_sindragosa_buff_t : public buff_t
   double ticking_cost;
   const timespan_t tick_period;
   int rune_gen;
+  action_t* bos_damage;
 
-  breath_of_sindragosa_buff_t( death_knight_t* player ) :
-    buff_t( player, "breath_of_sindragosa", player -> talent.breath_of_sindragosa ),
-    tick_period( player -> talent.breath_of_sindragosa -> effectN( 1 ).period() ),
-    rune_gen( as<int>( player -> find_spell( 303753 ) -> effectN( 1 ).base_value() ) )
+  breath_of_sindragosa_buff_t( death_knight_t* p ) :
+    buff_t( p, "breath_of_sindragosa", p -> talent.breath_of_sindragosa ),
+    tick_period( p -> talent.breath_of_sindragosa -> effectN( 1 ).period() ),
+    rune_gen( as<int>( p -> find_spell( 303753 ) -> effectN( 1 ).base_value() ) )
   {
     tick_zero = true;
     cooldown -> duration = 0_ms; // Handled by the action
@@ -3954,33 +3934,38 @@ struct breath_of_sindragosa_buff_t : public buff_t
       const spellpower_data_t& power = data().powerN( idx );
       if ( power.aura_id() == 0 || player -> dbc->spec_by_spell( power.aura_id() ) == player -> specialization() )
       {
-        this -> ticking_cost = power.cost_per_tick();
+        ticking_cost = power.cost_per_tick();
       }
     }
 
+    bos_damage = get_action<breath_of_sindragosa_tick_t>( "breath_of_sindragosa_tick", p );
+    // Store the ticking cost in bos_damage too so resource_loss can fetch the base ability cost
+    // cost() is overriden because the actual cost and resources spent are handled by the buff
+    bos_damage -> base_costs[ RESOURCE_RUNIC_POWER ] =  ticking_cost;
+
     set_tick_callback( [ this ] ( buff_t* /* buff */, int /* total_ticks */, timespan_t /* tick_time */ )
     {
-      death_knight_t* player = debug_cast< death_knight_t* >( this -> player );
+      death_knight_t* p = debug_cast< death_knight_t* >( this -> player );
 
       // TODO: Target the last enemy targeted by the player's foreground abilities
       // Currently use the player's target which is the first non invulnerable, active enemy found.
-      player_t* bos_target = player -> target;
+      player_t* bos_target = p -> target;
 
       // On cast, generate two runes and execute damage for no cost
       if ( this -> current_tick == 0 )
       {
-        player -> replenish_rune( rune_gen, player -> gains.breath_of_sindragosa );
-        player -> active_spells.breath_of_sindragosa -> set_target( bos_target );
-        player -> active_spells.breath_of_sindragosa -> execute();
+        p -> replenish_rune( rune_gen, p -> gains.breath_of_sindragosa );
+        bos_damage -> set_target( bos_target );
+        bos_damage -> execute();
         return;
       }
 
       // If the player doesn't have enough RP to fuel this tick, BoS is cancelled and no RP is consumed
       // This can happen if the player uses another RP spender between two ticks and is left with < 15 RP
-      if ( ! player -> resource_available( RESOURCE_RUNIC_POWER, this -> ticking_cost ) )
+      if ( ! p -> resource_available( RESOURCE_RUNIC_POWER, this -> ticking_cost ) )
       {
         sim -> print_log( "Player {} doesn't have the {} Runic Power required for current tick. Breath of Sindragosa was cancelled.",
-                          player -> name_str, this -> ticking_cost );
+                          p -> name_str, this -> ticking_cost );
 
         // Separate the expiration event to happen immediately after tick processing
         make_event( *sim, 0_ms, [ this ]() { this -> expire(); } );
@@ -3988,16 +3973,16 @@ struct breath_of_sindragosa_buff_t : public buff_t
       }
 
       // Else, consume the resource and update the damage tick's resource stats
-      player -> resource_loss( RESOURCE_RUNIC_POWER, this -> ticking_cost, nullptr, player -> active_spells.breath_of_sindragosa );
-      player -> active_spells.breath_of_sindragosa -> stats -> consume_resource( RESOURCE_RUNIC_POWER, this -> ticking_cost );
+      p -> resource_loss( RESOURCE_RUNIC_POWER, this -> ticking_cost, nullptr, bos_damage );
+      bos_damage -> stats -> consume_resource( RESOURCE_RUNIC_POWER, this -> ticking_cost );
 
       // If the player doesn't have enough RP to fuel the next tick, BoS is cancelled
       // after the RP consumption and before the damage event
       // This is the normal BoS expiration scenario
-      if ( ! player -> resource_available( RESOURCE_RUNIC_POWER, this -> ticking_cost  ) )
+      if ( ! p -> resource_available( RESOURCE_RUNIC_POWER, this -> ticking_cost  ) )
       {
         sim -> print_log( "Player {} doesn't have the {} Runic Power required for next tick. Breath of Sindragosa was cancelled.",
-                          player -> name_str, this -> ticking_cost );
+                          p -> name_str, this -> ticking_cost );
 
         // Separate the expiration event to happen immediately after tick processing
         make_event( *sim, 0_ms, [ this ]() { this -> expire(); } );
@@ -4005,8 +3990,8 @@ struct breath_of_sindragosa_buff_t : public buff_t
       }
 
       // If there's enough resources for another tick, deal damage
-      player -> active_spells.breath_of_sindragosa -> set_target( bos_target );
-      player -> active_spells.breath_of_sindragosa -> execute();
+      bos_damage -> set_target( bos_target );
+      bos_damage -> execute();
     } );
   }
 
@@ -4037,6 +4022,7 @@ struct breath_of_sindragosa_t : public death_knight_spell_t
   {
     parse_options( options_str );
     base_tick_time = 0_ms; // Handled by the buff
+    add_child( get_action<breath_of_sindragosa_tick_t>( "breath_of_sindragosa_tick", p ) );
   }
 
   void execute() override
@@ -4061,8 +4047,8 @@ struct breath_of_sindragosa_t : public death_knight_spell_t
 // Cold Heart damage
 struct cold_heart_damage_t : public death_knight_spell_t
 {
-  cold_heart_damage_t( death_knight_t* p ) :
-    death_knight_spell_t( "cold_heart", p, p -> spell.cold_heart_damage )
+  cold_heart_damage_t( util::string_view name, death_knight_t* p ) :
+    death_knight_spell_t( name, p, p -> find_spell( 281210 ) )
   {
     background = true;
   }
@@ -4079,10 +4065,13 @@ struct cold_heart_damage_t : public death_knight_spell_t
 
 struct chains_of_ice_t : public death_knight_spell_t
 {
+  action_t* cold_heart;
+
   chains_of_ice_t( death_knight_t* p, const std::string& options_str ) :
     death_knight_spell_t( "chains_of_ice", p, p -> spec.chains_of_ice )
   {
     parse_options( options_str );
+    cold_heart = get_action<cold_heart_damage_t>( "cold_heart", p );
   }
 
   void execute() override
@@ -4091,8 +4080,8 @@ struct chains_of_ice_t : public death_knight_spell_t
 
     if ( p() -> buffs.cold_heart -> check() > 0 )
     {
-      p() -> active_spells.cold_heart -> set_target( target );
-      p() -> active_spells.cold_heart -> execute();
+      cold_heart -> set_target( target );
+      cold_heart -> execute();
       p() -> buffs.cold_heart -> expire();
     }
   }
@@ -4383,8 +4372,8 @@ struct deaths_due_damage_t : public death_and_decay_damage_t
 // Relish in Blood healing and RP generation
 struct relish_in_blood_t : public death_knight_heal_t
 {
-  relish_in_blood_t( death_knight_t* p ) :
-    death_knight_heal_t( "relish_in_blood", p, p -> spell.relish_in_blood )
+  relish_in_blood_t( util::string_view name, death_knight_t* p ) :
+    death_knight_heal_t( name, p, p -> find_spell( 317614 ) )
   {
     background = true;
     target = p;
@@ -4405,6 +4394,7 @@ struct relish_in_blood_t : public death_knight_heal_t
 struct death_and_decay_base_t : public death_knight_spell_t
 {
   action_t* damage;
+  action_t* relish_in_blood;
 
   death_and_decay_base_t( death_knight_t* p, const std::string& name, const spell_data_t* spell ) :
     death_knight_spell_t( name, p, spell ),
@@ -4419,6 +4409,9 @@ struct death_and_decay_base_t : public death_knight_spell_t
 
     // Set the player-stored death and decay cooldown to this action's cooldown
     p -> cooldown.death_and_decay_dynamic = cooldown;
+
+    if ( p -> talent.relish_in_blood -> ok() )
+      relish_in_blood = get_action<relish_in_blood_t>( "relish_in_blood", p );
   }
 
   void init_finished() override
@@ -4461,15 +4454,11 @@ struct death_and_decay_base_t : public death_knight_spell_t
 
     death_knight_spell_t::execute();
 
-    if ( p() -> buffs.crimson_scourge -> up() && p() -> talent.relish_in_blood -> ok() )
+    // If bone shield isn't up, Relish in Blood doesn't heal or generate any RP
+    if ( p() -> buffs.crimson_scourge -> up() && p() -> talent.relish_in_blood -> ok() && p() -> buffs.bone_shield -> up() )
     {
-      // Melekus - 2020-09-27: Bug? If bone shield isn't up, there's no RP generation at all
-      // https://github.com/SimCMinMax/WoW-BugTracker/issues/626
-      if ( p() -> buffs.bone_shield -> up() || ! p() -> bugs )
-      {
-        // The heal's energize automatically handles RP generation
-        p() -> active_spells.relish_in_blood -> execute();
-      }
+      // The heal's energize data automatically handles RP generation
+      relish_in_blood -> execute();
     }
 
     p() -> buffs.crimson_scourge -> decrement();
@@ -4736,6 +4725,8 @@ struct death_strike_heal_t : public death_knight_heal_t
     {
       minimum_healing = std::floor( (minimum_healing * (1.0 + p -> talent.voracious -> effectN( 3 ).percent())) * 100 ) / 100;
     }
+
+    // TODO: Implement Death Strike rank 2 healing increase for dps specs
   }
 
   void init() override
@@ -4838,8 +4829,8 @@ struct death_strike_t : public death_knight_melee_attack_t
       add_child( oh_attack );
     }
 
-    // 2019-03-01: On 8.1.5 PTR, Death Strike is fixed with regards to procs on RP spent
-    // RE/RC/Gargoyle now behave as if Death Strike costed 35RP for dps specs.
+    // 2019-03-01: Since 8.1.5, Death Strike has a rank 2 reducing RP costs for dps specs
+    // RE/RC/Gargoyle behave as if Death Strike costed 35RP, unlike other cost reduction mechanics
     // We model that by directly changing the base RP cost from spelldata, rather than manipulating cost()
     base_costs[ RESOURCE_RUNIC_POWER ] += p -> spec.death_strike_2 -> effectN( 3 ).resource( RESOURCE_RUNIC_POWER );
   }
@@ -4920,7 +4911,6 @@ struct empower_rune_weapon_buff_t : public buff_t
     tick_zero = true;
     cooldown -> duration = 0_ms; // Handled in the action
     set_period( p -> spec.empower_rune_weapon -> effectN( 1 ).period() );
-    set_trigger_spell( p -> spec.empower_rune_weapon );
     set_default_value( p -> spec.empower_rune_weapon -> effectN( 3 ).percent() + p -> conduits.accelerated_cold.percent());
     add_invalidate( CACHE_HASTE );
     set_refresh_behavior( buff_refresh_behavior::EXTEND);
@@ -5102,6 +5092,12 @@ struct festering_wound_t : public death_knight_spell_t
     background = true;
 
     base_multiplier *= 1.0 + p -> talent.bursting_sores -> effectN( 1 ).percent();
+
+    // "Festering Strike - Upgrade - Rank 2 - Increases damage done by 20%" does not actually increase FS damage by 20%
+    // Instead it increases Festering Wound damage by 20% according to spelldata and ingame testing.
+    // 2020-12-25 - Melekus: gonna consider this a bug for now.
+    if ( p -> bugs )
+      base_multiplier *= 1.0 + p -> spec.festering_strike_2 -> effectN( 1 ).percent();
   }
 
   void execute() override
@@ -5121,7 +5117,11 @@ struct festering_strike_t : public death_knight_melee_attack_t
   {
     parse_options( options_str );
     triggers_shackle_the_unworthy = true;
-    base_multiplier *= 1.0 + p -> spec.festering_strike_2 -> effectN( 1 ).percent();
+    // "Festering Strike - Upgrade - Rank 2 - Increases damage done by 20%" does not actually increase FS damage by 20%
+    // Instead it increases Festering Wound damage by 20% according to spelldata and ingame testing.
+    // 2020-12-25 - Melekus: gonna consider this a bug for now.
+    if ( ! p -> bugs )
+      base_multiplier *= 1.0 + p -> spec.festering_strike_2 -> effectN( 1 ).percent();
   }
 
   void impact( action_state_t* s ) override
@@ -5144,15 +5144,19 @@ struct festering_strike_t : public death_knight_melee_attack_t
 
 struct frostscythe_t : public death_knight_melee_attack_t
 {
+  action_t* inexorable_assault;
+
   frostscythe_t( death_knight_t* p, const std::string& options_str ) :
     death_knight_melee_attack_t( "frostscythe", p, p -> talent.frostscythe )
   {
     parse_options( options_str );
 
+    inexorable_assault = get_action<inexorable_assault_damage_t>( "inexorable_assault", p );
+
     weapon = &( player -> main_hand_weapon );
     aoe = as<int>( data().effectN( 5 ).base_value() );
     triggers_shackle_the_unworthy = triggers_icecap = true;
-    // The crit multipier is now handled by the apply_affecting_auras( spec.death_knight ) call
+    // Crit multipier handled in death_knight_t::apply_affecting_aura()
   }
 
   void execute() override
@@ -5163,8 +5167,8 @@ struct frostscythe_t : public death_knight_melee_attack_t
 
     if ( p() -> buffs.inexorable_assault -> up() )
     {
-      p() -> active_spells.inexorable_assault -> set_target( target );
-      p() -> active_spells.inexorable_assault -> schedule_execute();
+      inexorable_assault -> set_target( target );
+      inexorable_assault -> schedule_execute();
       p() -> buffs.inexorable_assault -> decrement();
     }
 
@@ -5656,12 +5660,16 @@ struct obliterate_strike_t : public death_knight_melee_attack_t
     weapon = w;
     triggers_icecap = true;
 
-    deaths_due_cleave_targets = as<int>(p -> spell.deaths_due -> effectN( 2 ).base_value()) +
-                                  data().effectN ( 1 ).chain_target() +
-                                  as<int>(p -> spell.dnd_buff -> effectN ( 4 ).base_value());
+    // To support Death's Due affecting Obliterate in shadowlands:
+    // - obliterate damage spells have gained a value of 1 in their chain target data
+    // - the death and decay buff now has an effect that modifies obliterate's chain target with a value of 0
+    // - death's due increases the aforementionned death and decay buff effect by 1
+    deaths_due_cleave_targets = data().effectN ( 1 ).chain_target() +
+                                as<int>( p -> spell.dnd_buff -> effectN ( 4 ).base_value() ) +
+                                as<int>( p -> spell.deaths_due -> effectN( 2 ).base_value() );
 
     base_multiplier *= 1.0 + p -> spec.obliterate_2 -> effectN( 1 ).percent();
-    // So rank1 of motfw is dw, rank 2 is 2h, but the effect is tied to rank 1.
+    // Rank 2 validates the 2H bonus that is contained in rank 1 data
     if ( p -> spec.might_of_the_frozen_wastes_2 -> ok() && p -> main_hand_weapon.group() == WEAPON_2H )
     {
       base_multiplier *= 1.0 + p -> spec.might_of_the_frozen_wastes -> effectN( 1 ).percent();
@@ -5756,6 +5764,7 @@ struct obliterate_strike_t : public death_knight_melee_attack_t
 struct obliterate_t : public death_knight_melee_attack_t
 {
   obliterate_strike_t *mh, *oh, *km_mh, *km_oh;
+  action_t* inexorable_assault;
 
   obliterate_t( death_knight_t* p, const std::string& options_str = std::string() ) :
     death_knight_melee_attack_t( "obliterate", p, p -> spec.obliterate ),
@@ -5764,6 +5773,8 @@ struct obliterate_t : public death_knight_melee_attack_t
     parse_options( options_str );
     dual = true;
     triggers_shackle_the_unworthy = true;
+
+    inexorable_assault = get_action<inexorable_assault_damage_t>( "inexorable_assault", p );
 
     const spell_data_t* mh_data = p -> main_hand_weapon.group() == WEAPON_2H ? data().effectN( 4 ).trigger() : data().effectN( 2 ).trigger();
 
@@ -5822,8 +5833,8 @@ struct obliterate_t : public death_knight_melee_attack_t
 
       if ( p() -> buffs.inexorable_assault -> up() )
       {
-        p() -> active_spells.inexorable_assault -> set_target( target );
-        p() -> active_spells.inexorable_assault -> schedule_execute();
+        inexorable_assault -> set_target( target );
+        inexorable_assault -> schedule_execute();
         p() -> buffs.inexorable_assault -> decrement();
       }
 
@@ -5892,7 +5903,8 @@ struct pillar_of_frost_buff_t : public buff_t
     buff_t( p, "pillar_of_frost", p -> spec.pillar_of_frost )
   {
     cooldown -> duration = 0_ms;
-    set_default_value( p -> spec.pillar_of_frost -> effectN( 1 ).percent() + p -> spec.pillar_of_frost_2 -> effectN( 1 ).percent() );
+    set_default_value( p -> spec.pillar_of_frost -> effectN( 1 ).percent() +
+                       p -> spec.pillar_of_frost_2 -> effectN( 1 ).percent() );
     add_invalidate( CACHE_STRENGTH );
   }
 
@@ -5955,15 +5967,16 @@ struct raise_dead_t : public death_knight_spell_t
 
     // If the action is done in precombat and the pet is permanent
     // Assume that the player used it long enough before pull that the cooldown is ready again
-    if ( is_precombat && data().duration() == 0_ms )
+    if ( is_precombat && p() -> spec.raise_dead_2 )
     {
       cooldown -> reset( false );
+      p() -> pets.ghoul_pet -> precombat_spawn = true;
     }
 
     // Summon for the duration specified in spelldata if there's one (no data = permanent pet)
     p() -> pets.ghoul_pet -> summon( data().duration() );
 
-    // Sacrificial Pact doesn't despawn risen skulker, so make sure it's not already up
+    // Sacrificial Pact doesn't despawn risen skulker, so make sure it's not already up before spawning it
     if ( p() -> talent.all_will_serve -> ok() && p() -> pets.risen_skulker -> is_sleeping() )
     {
       p() -> pets.risen_skulker -> summon( 0_ms );
@@ -6199,23 +6212,13 @@ struct clawing_shadows_t : public scourge_strike_base_t
 
 struct scourge_strike_shadow_t : public death_knight_melee_attack_t
 {
-  const spell_data_t* scourge_base;
-
   scourge_strike_shadow_t( util::string_view name, death_knight_t* p ) :
-    death_knight_melee_attack_t( name, p, p -> spec.scourge_strike -> effectN( 3 ).trigger() ),
-    scourge_base( p -> spec.scourge_strike )
+    death_knight_melee_attack_t( name, p, p -> spec.scourge_strike -> effectN( 3 ).trigger() )
   {
     may_miss = may_parry = may_dodge = false;
     background = proc = dual = true;
     weapon = &( player -> main_hand_weapon );
     base_multiplier *= 1.0 + p -> spec.scourge_strike_2 -> effectN( 1 ).percent();
-  }
-
-  // Fix the different level req in spell data between scourge strike and its shadow damage component
-  bool verify_actor_level() const override
-  {
-    return scourge_base -> id() && scourge_base -> is_level( player -> true_level ) &&
-      scourge_base -> level() <= MAX_LEVEL;
   }
 };
 
@@ -6686,7 +6689,7 @@ struct icebound_fortitude_t : public death_knight_spell_t
 struct mark_of_blood_heal_t : public death_knight_heal_t
 {
   mark_of_blood_heal_t( death_knight_t* p ) : // The data is removed and switched to the talent spell on PTR 8.3.0.32805
-    death_knight_heal_t( "mark_of_blood", p, p -> talent.mark_of_blood )
+    death_knight_heal_t( "mark_of_blood_heal", p, p -> talent.mark_of_blood )
   {
     may_crit = callbacks = false;
     background = dual = true;
@@ -6805,12 +6808,22 @@ struct runic_corruption_buff_t : public buff_t
   runic_corruption_buff_t( death_knight_t* p ) :
     buff_t( p, "runic_corruption", p -> spell.runic_corruption )
   {
-    set_trigger_spell( p -> spec.runic_corruption );
+    // Runic Corruption refreshes to remaining time + buff duration
+    refresh_behavior = buff_refresh_behavior::EXTEND;
     set_affects_regen( true );
     set_stack_change_callback( [ p ]( buff_t*, int, int )
     {
       p -> _runes.update_coefficient();
     } );
+  }
+
+  // Runic Corruption duration is reduced by haste so it always regenerates
+  // the equivalent of 0.9 of a rune ( 3 / 10 seconds on 3 regenerating runes )
+  timespan_t buff_duration() const override
+  {
+    timespan_t initial_duration = buff_t::buff_duration();
+
+    return initial_duration * player -> cache.attack_haste();
   }
 };
 
@@ -6892,7 +6905,7 @@ void runeforge::stoneskin_gargoyle( special_effect_t& effect )
 
   p -> runeforge.rune_of_the_stoneskin_gargoyle = true;
 
-  p -> buffs.stoneskin_gargoyle = make_buff( p, "stoneskin_gargoyle", p -> find_spell( effect.spell_id ) )
+  p -> buffs.stoneskin_gargoyle = make_buff( p, "stoneskin_gargoyle", effect.driver() )
     -> set_default_value_from_effect_type( A_MOD_TOTAL_STAT_PERCENTAGE )
     -> set_pct_buff_type( STAT_PCT_BUFF_STRENGTH )
     -> set_pct_buff_type( STAT_PCT_BUFF_STAMINA )
@@ -6973,8 +6986,8 @@ void runeforge::sanguination( special_effect_t& effect )
     double health_threshold;
     sanguination_heal_t( special_effect_t& effect ) :
       death_knight_heal_t( "rune_of_sanguination", static_cast<death_knight_t*>( effect.player ),
-                           effect.player -> find_spell( effect.spell_id ) -> effectN( 1 ).trigger() ),
-      health_threshold( effect.player -> find_spell( effect.spell_id ) -> effectN( 1 ).base_value() )
+                           effect.driver() -> effectN( 1 ).trigger() ),
+      health_threshold( effect.driver() -> effectN( 1 ).base_value() )
     {
       background = true;
       tick_pct_heal = data().effectN( 1 ).percent();
@@ -7142,14 +7155,14 @@ double death_knight_t::resource_loss( resource_e resource_type, double amount, g
     // Some abilities use the actual RP spent by the ability, others use the base RP cost
     double base_rp_cost = actual_amount;
 
-    // BoS cost is handled in the buff, not in the action
-    if ( action && action -> name_str != "breath_of_sindragosa_tick" )
+    // If an action is linked, fetch its base cost
+    if ( action )
       base_rp_cost = action -> base_costs[ RESOURCE_RUNIC_POWER ];
 
-    // 2020-10-03 - Melekus: After some limited testing (around 200 Frost Strike casts during Hypothermic Presence)
-    // It looks like Runic Empowerment proc chance is based on the ability's base rune cost rather than the actual amount of RP spent
+    // 2020-12-16 - Melekus: Based on testing with both Frost Strike and Breath of Sindragosa during Hypothermic Presence,
+    // RE is using the ability's base cost for its proc chance calculation, just like Runic Corruption
     trigger_runic_empowerment( base_rp_cost );
-    trigger_runic_corruption( base_rp_cost, -1.0, procs.rp_runic_corruption );
+    trigger_runic_corruption( procs.rp_runic_corruption, base_rp_cost );
 
     if ( talent.summon_gargoyle -> ok() && pets.gargoyle )
     {
@@ -7231,7 +7244,7 @@ void death_knight_t::trigger_soul_reaper_death( player_t* target )
     sim -> print_log( "Target {} died while affected by Soul Reaper, player {} gains Runic Corruption buff.",
                       target -> name(), name() );
 
-    trigger_runic_corruption( 0, -1.0, procs.sr_runic_corruption );
+    trigger_runic_corruption( procs.sr_runic_corruption, 0, 1.0 );
   }
 }
 
@@ -7261,7 +7274,7 @@ void death_knight_t::trigger_festering_wound_death( player_t* target )
 
   if ( talent.pestilent_pustules -> ok() )
   {
-    trigger_runic_corruption( 0, talent.pestilent_pustules -> effectN( 1 ).percent() * n_wounds, procs.pp_runic_corruption );
+    trigger_runic_corruption( procs.pp_runic_corruption, 0, talent.pestilent_pustules -> effectN( 1 ).percent() * n_wounds );
   }
 
   // Triggers a bursting sores explosion for each wound on the target
@@ -7426,38 +7439,20 @@ void death_knight_t::trigger_runic_empowerment( double rpcost )
   }
 }
 
-void death_knight_t::trigger_runic_corruption( double rpcost, double override_chance, proc_t* proc )
+void death_knight_t::trigger_runic_corruption( proc_t* proc, double rpcost, double override_chance )
 {
   if ( ! spec.runic_corruption -> ok() )
     return;
 
   double proc_chance = 0.0;
-  // Check whether the proc is from a special effect, or from RP consumption
-  if ( rpcost == 0 && override_chance != -1.0 )
-  {
-    proc_chance = override_chance;
-  }
-  else
-  {
-    proc_chance = spec.runic_corruption -> effectN( 1 ).percent() * rpcost / 100.0 ;
-  }
+  // Use the overriden chance if there's one and RP cost is 0
+  proc_chance = ( !rpcost && override_chance != -1.0 ) ? override_chance :
+    // Else, use the general proc chance ( 1.6 per RP * RP / 100 as of patch 9.0.2 )
+    spec.runic_corruption -> effectN( 1 ).percent() * rpcost / 100.0;
 
-  // If the roll fails, return
-  if ( ! rng().roll( proc_chance ) )
-    return;
-
-  // Runic Corruption duration is reduced by haste
-  // It always regenerates 0.9 (3 times 3/10) of a rune
-  timespan_t duration = timespan_t::from_seconds( 3.0 * cache.attack_haste() );
-  // A refresh adds the full buff duration
-  if ( buffs.runic_corruption -> check() == 0 )
-    buffs.runic_corruption -> trigger( 1, buff_t::DEFAULT_VALUE(), -1.0, duration );
-  else
-    buffs.runic_corruption -> extend_duration( this, duration );
-
-  proc -> occur();
-
-  return;
+  // Buff duration and refresh behavior handled in runic_corruption_buff_t
+  if ( buffs.runic_corruption -> trigger( 1, buff_t::DEFAULT_VALUE(), proc_chance ) && proc )
+    proc -> occur();
 }
 
 void death_knight_t::trigger_festering_wound( const action_state_t* state, unsigned n, proc_t* proc )
@@ -7521,7 +7516,7 @@ void death_knight_t::burst_festering_wound( player_t* target, unsigned n )
       // Scourge strike aoe is 1 - ( 0.9 ) ^ n targets to proc, or 10% for each target hit
       if ( dk -> talent.pestilent_pustules -> ok() )
       {
-        dk -> trigger_runic_corruption( 0, dk -> talent.pestilent_pustules -> effectN( 1 ).percent() * n, dk -> procs.pp_runic_corruption );
+        dk -> trigger_runic_corruption( dk -> procs.pp_runic_corruption, 0, dk -> talent.pestilent_pustules -> effectN( 1 ).percent() * n );
       }
 
       td -> debuff.festering_wound -> decrement( n_executes );
@@ -7552,10 +7547,9 @@ void death_knight_t::start_inexorable_assault()
   buffs.inexorable_assault -> trigger( buffs.inexorable_assault -> max_stack() );
 
   // Inexorable assault keeps ticking out of combat and when it's at max stacks
-  // We solvee that by chosing a random number between 0 and the delay between each tick
-
-  timespan_t first = timespan_t::from_seconds(
-    rng().range( 0, talent.inexorable_assault -> effectN( 1 ).period().total_seconds() ) );
+  // We solve that by picking a random point at which the buff starts ticking
+  timespan_t first = timespan_t::from_millis(
+    rng().range( 0, as<int>( talent.inexorable_assault -> effectN( 1 ).period().total_millis() ) ) );
 
   make_event( *sim, first, [ this ]() {
     buffs.inexorable_assault -> trigger();
@@ -7576,10 +7570,9 @@ void death_knight_t::start_cold_heart()
   buffs.cold_heart -> trigger( buffs.cold_heart -> max_stack() );
 
   // Cold Heart keeps ticking out of combat and when it's at max stacks
-  // We solvee that by chosing a random number between 0 and the delay between each tick
-
-  timespan_t first = timespan_t::from_seconds(
-    rng().range( 0, talent.cold_heart -> effectN( 1 ).period().total_seconds() ) );
+  // We solve that by picking a random point at which the buff starts ticking
+  timespan_t first = timespan_t::from_millis(
+    rng().range( 0, as<int>( talent.cold_heart -> effectN( 1 ).period().total_millis() ) ) );
 
   make_event( *sim, first, [ this ]() {
     buffs.cold_heart -> trigger();
@@ -7602,32 +7595,10 @@ void death_knight_t::create_actions()
   {
     if ( talent.mark_of_blood -> ok() )
     {
-      active_spells.mark_of_blood = new mark_of_blood_heal_t( this );
-    }
-
-    if ( talent.relish_in_blood -> ok() )
-    {
-      active_spells.relish_in_blood = new relish_in_blood_t( this );
+      active_spells.mark_of_blood_heal = new mark_of_blood_heal_t( this );
     }
   }
-  // Frost
-  else if ( specialization() == DEATH_KNIGHT_FROST )
-  {
-    if ( talent.cold_heart -> ok() )
-    {
-      active_spells.cold_heart = new cold_heart_damage_t( this );
-    }
 
-    if ( talent.inexorable_assault -> ok() )
-    {
-      active_spells.inexorable_assault = new inexorable_assault_damage_t( this );
-    }
-
-    if ( talent.breath_of_sindragosa -> ok() )
-    {
-      active_spells.breath_of_sindragosa = new breath_of_sindragosa_tick_t( this );
-    }
-  }
   // Unholy
   else if ( specialization() == DEATH_KNIGHT_UNHOLY )
   {
@@ -8219,11 +8190,8 @@ void death_knight_t::init_spells()
   // Blood
   spell.blood_shield        = find_spell( 77535 );
   spell.bone_shield         = find_spell( 195181 );
-  spell.relish_in_blood     = find_spell( 317614 );
 
   // Frost
-  spell.cold_heart_damage         = find_spell( 281210 );
-  spell.inexorable_assault_damage = find_spell( 253597 );
   spell.murderous_efficiency_gain = find_spell( 207062 );
   spell.rage_of_the_frozen_champion = find_spell( 341725 );
 
@@ -8441,7 +8409,7 @@ void death_knight_t::create_buffs()
         -> set_default_value_from_effect( 1, 0.1 );
 
   buffs.crimson_scourge = make_buff( this, "crimson_scourge", find_spell( 81141 ) )
-        -> set_trigger_spell( spec.crimson_scourge );
+    -> set_trigger_spell( spec.crimson_scourge );
 
   buffs.dancing_rune_weapon = new dancing_rune_weapon_buff_t( this );
 
@@ -8464,8 +8432,7 @@ void death_knight_t::create_buffs()
   // Frost
   buffs.breath_of_sindragosa = new breath_of_sindragosa_buff_t( this );
 
-  buffs.cold_heart = make_buff( this, "cold_heart", talent.cold_heart -> effectN( 1 ).trigger() )
-        -> set_trigger_spell( talent.cold_heart );
+  buffs.cold_heart = make_buff( this, "cold_heart", talent.cold_heart -> effectN( 1 ).trigger() );
 
   buffs.empower_rune_weapon = new empower_rune_weapon_buff_t( this );
 
@@ -8484,11 +8451,9 @@ void death_knight_t::create_buffs()
         -> set_cooldown( talent.icy_talons->internal_cooldown() )
         -> set_trigger_spell( talent.icy_talons );
 
-  buffs.inexorable_assault = make_buff( this, "inexorable_assault", find_spell( 253595 ) )
-        -> set_trigger_spell( talent.inexorable_assault );
+  buffs.inexorable_assault = make_buff( this, "inexorable_assault", find_spell( 253595 ) );
 
   buffs.killing_machine = make_buff( this, "killing_machine", spec.killing_machine -> effectN( 1 ).trigger() )
-        -> set_trigger_spell( spec.killing_machine )
         -> set_chance( 1.0 )
         -> set_default_value_from_effect( 1 );
 
@@ -8799,7 +8764,7 @@ void death_knight_t::do_damage( action_state_t* state )
   if ( state -> result_amount > 0 && talent.mark_of_blood -> ok() && ! state -> action -> special &&
        get_target_data( state -> action -> player ) -> debuff.mark_of_blood -> up() )
   {
-    active_spells.mark_of_blood -> execute();
+    active_spells.mark_of_blood_heal -> execute();
   }
 
   if ( runeforge.rune_of_sanguination )
@@ -9304,14 +9269,11 @@ struct death_knight_module_t : public module_t {
     unique_gear::register_special_effect( 334836, runeforge::reanimated_shambler );
   }
 
+  /*
   void register_hotfixes() const override
   {
-    hotfix::register_spell( "Death Knight", "2020-09-20", "Incorrect cooldown for Magus of the Dead's Frostbolt.", 317792 )
-      .field( "cooldown" )
-      .operation( hotfix::HOTFIX_SET )
-      .modifier( 3000 )
-      .verification_value( 0 );
-  }
+
+  }*/
 
   void init( player_t* ) const override {}
   bool valid() const override { return true; }
