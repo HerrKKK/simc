@@ -20,7 +20,7 @@ precombat->add_action( "snapshot_stats" );
 precombat->add_action( "cat_form" );
 precombat->add_action( "prowl" );
 
-def->add_action( "call_action_list,name=cooldown,if=variable.owlweave=1", "Balance weaving investigation" );
+def->add_action( "call_action_list,name=owlweave,if=variable.owlweave=1", "Balance weaving investigation" );
 def->add_action( "prowl", "Prowl whenever possible" );
 def->add_action( "tigers_fury,if=buff.cat_form.down" );
 def->add_action( "cat_form,if=buff.cat_form.down" );
@@ -36,7 +36,7 @@ def->add_action( "run_action_list,name=bloodtalons,if=talent.bloodtalons.enabled
 def->add_action( "ferocious_bite,target_if=max:target.time_to_die,if=buff.apex_predators_craving.up" );
 def->add_action( "pool_resource,for_next=1" );
 def->add_action( "rake,target_if=(refreshable|persistent_multiplier>dot.rake.pmultiplier)&druid.rake.ticks_gained_on_refresh>spell_targets.swipe_cat*2-2" );
-def->add_action( "moonfire_cat,target_if=refreshable&druid.moonfire.ticks_gained_on_refresh>spell_targets.swipe_cat*2-2" );
+def->add_action( "moonfire_cat,target_if=refreshable&druid.moonfire_cat.ticks_gained_on_refresh>spell_targets.swipe_cat*2-2" );
 def->add_action( "pool_resource,for_next=1" );
 def->add_action( "thrash_cat,target_if=refreshable&druid.thrash_cat.ticks_gained_on_refresh>variable.thrash_ticks&!buff.bs_inc.up" );
 def->add_action( "pool_resource,for_next=1" );

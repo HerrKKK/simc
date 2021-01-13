@@ -1,5 +1,5 @@
-// Spell text, wow build 9.0.2.36949
-static const std::array<spelltext_data_t, 15091> __spelltext_data { {
+// Spell text, wow build 9.0.2.37142
+static const std::array<spelltext_data_t, 15094> __spelltext_data { {
   {     17, "Shields an ally for $d, absorbing $<shield> damage.  You cannot shield the target again for $6788d.", "Absorbs $w1 damage.", 0 },
   {     53, "Stab the target, causing ${$s2*$<mult>} Physical damage. Damage increased by $s4% when you are behind your target$?s319949[, and critical strikes apply Find Weakness for $319949s1 sec][].\r\n\r\n|cFFFFFFFFAwards $s3 combo $lpoint:points;.|r", 0, 0 },
   {     56, "Stuns target for $d.", "Stunned.", 0 },
@@ -6130,6 +6130,7 @@ static const std::array<spelltext_data_t, 15091> __spelltext_data { {
   { 193468, "Range of all your ranged abilities is increased by ${$s1}.1% and damage of all abilities increased by ${$s2}.1%.", "Range increased by $w1%.\r\nFocus spending abilites deal $s2% increased damage.", "Mastery" },
   { 193470, "$@spelldesc193371", 0, 0 },
   { 193473, "Assaults the target's mind with Shadow energy, causing $o1 Shadow damage over $d and slowing their movement speed by $s2%.", "$?$w2=0[Taking][Movement speed slowed and taking] Shadow damage every $t1 sec.", 0 },
+  { 193486, "Gain a Rune.", 0, 0 },
   { 193530, "Grants you and your pet $s2 Focus per sec and $s1% increased critical strike chance for $d.", "Gaining $s2 Focus per sec.\r\nCritical Strike chance increased by $s1%.", 0 },
   { 193531, "You may have a maximum of $s3 combo points, your finishing moves consume up to $s3 combo points, and your finishing moves deal $s4% increased damage.", 0, 0 },
   { 193532, "Activating Bestial Wrath grants $s1 charges of Barbed Shot.", 0, 0 },
@@ -13320,6 +13321,7 @@ static const std::array<spelltext_data_t, 15091> __spelltext_data { {
   { 323701, "$@spelldesc323673", 0, 0 },
   { 323705, "$@spelldesc323673", 0, 0 },
   { 323706, "$@spelldesc323673", 0, 0 },
+  { 323707, "$@spelldesc323673", 0, 0 },
   { 323710, "$@spelldesc315443", "Recently pulled  by Abomination Limb and can't be pulled again.", "Necrolord" },
   { 323755, "Permanently enchants a cloak to increase your Stamina by $ec1.", 0, 0 },
   { 323760, "Permanently enchants your chest to increase your Strength or Agility by $ec1 and give your auto-attacks and auto-shots a chance to deal additional shadow damage.", 0, 0 },
@@ -13931,6 +13933,7 @@ static const std::array<spelltext_data_t, 15091> __spelltext_data { {
   { 334886, "Deal $s1 Shadow damage to a target, but incur a stack of Lingering Despair each time you do. Lingering Despair deals $334887s1 Shadow damage every $334887t sec while you are holding the Mirror of Despair. Only usable outdoors in the Shadowlands.", 0, 0 },
   { 334887, "$@spelldesc334886", "Taking $w1 Shadow damage every $t sec while you continue to hold the Mirror of Despair. Destroy to remove the Lingering Despair.", 0 },
   { 334888, "Dark Transformation also increases the attack speed and damage of you and your Monstrosity by $334896s1%.", 0, 0 },
+  { 334895, 0, "Damage increased by $m2%, and attack speed increased by $m3%.", 0 },
   { 334896, "$@spelldesc334888", "Damage and attack speed increased by $m3%.", 0 },
   { 334898, "Death Strike and Death Coil deal $s2% increased damage and reduce the remaining cooldown of $?s152280[Defile]?a315442[Death's Due][Death and Decay] by ${$s1/10}.1 sec.", 0, 0 },
   { 334934, "$@spelldesc228920", 0, 0 },
@@ -15093,12 +15096,11 @@ static const std::array<spelltext_data_t, 15091> __spelltext_data { {
   { 348439, "Restores ${$m1/5*$d} health over $d.  Must remain seated while eating.", "Restores ${$m1/5} health per second.", 0 },
 } };
 
-// spelltext hotfix entries, wow build 9.0.2.36949
-static constexpr std::array<hotfix::client_hotfix_entry_t, 1> __spelltext_hotfix_data { {
-  {  188023,  0, "Enter the spirit realm, giving the imbiber invisibility for $d. Ineffective above level $maxcast.", "Enter the spirit realm, giving the imbiber invisibility for $d. Ineffective above level $188024maxcast." },
+// spelltext hotfix entries, wow build 9.0.2.37142
+static constexpr std::array<hotfix::client_hotfix_entry_t, 0> __spelltext_hotfix_data { {
 } };
 
-// Spell description variables, wow build 9.0.2.36949
+// Spell description variables, wow build 9.0.2.37142
 static const std::array<spelldesc_vars_data_t, 295> __spelldesc_vars_data { {
   {      17, "$rapture=$?a47536[${(1+$47536s1/100)}][${1}]\r\n$shadow=$?a137033[${1.00}][${1}]\r\n$shield=${$SP*1.65*(1+$@versadmg)*$<rapture>*$<shadow>}" },
   {      53, "$mult=${($max(0,$min($pl-10,10))*11+260)/370}" },
@@ -15397,7 +15399,7 @@ static const std::array<spelldesc_vars_data_t, 295> __spelldesc_vars_data { {
   {  345549, "$phylacteryhealth=$s2*15" },
 } };
 
-// spelldesc_vars hotfix entries, wow build 9.0.2.36949
+// spelldesc_vars hotfix entries, wow build 9.0.2.37142
 static constexpr std::array<hotfix::client_hotfix_entry_t, 0> __spelldesc_vars_hotfix_data { {
 } };
 

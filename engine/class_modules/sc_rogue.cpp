@@ -1268,9 +1268,9 @@ public:
     // Apply and Snapshot Echoing Reprimand Buffs
     if ( p()->covenant.echoing_reprimand->ok() && consumes_echoing_reprimand() )
     {
-      if ( consume_cp == 2 && p()->buffs.echoing_reprimand_2->up() || 
-           consume_cp == 3 && p()->buffs.echoing_reprimand_3->up() || 
-           consume_cp == 4 && p()->buffs.echoing_reprimand_4->up() )
+      if ( ( consume_cp == 2 && p()->buffs.echoing_reprimand_2->up() ) || 
+           ( consume_cp == 3 && p()->buffs.echoing_reprimand_3->up() ) || 
+           ( consume_cp == 4 && p()->buffs.echoing_reprimand_4->up() ) )
       {
         effective_cp = as<int>( p()->covenant.echoing_reprimand->effectN( 2 ).base_value() );
       }
@@ -1652,19 +1652,13 @@ public:
     trigger_relentless_strikes( ab::execute_state );
     trigger_elaborate_planning( ab::execute_state );
     trigger_alacrity( ab::execute_state );
+    trigger_deepening_shadows( ab::execute_state );
 
+    // Trigger the 1ms delayed breaking of all stealth buffs
     if ( ab::harmful && p()->stealthed( STEALTH_BASIC | STEALTH_SHADOWMELD ) )
     {
-      ab::player->buffs.shadowmeld->expire();
-
-      // Check stealthed again after shadowmeld is popped. If we're still stealthed, trigger subterfuge
-      if ( p()->talent.subterfuge->ok() && !p()->buffs.subterfuge->check() && p()->stealthed( STEALTH_BASIC ) )
-        p()->buffs.subterfuge->trigger();
-      else
-        p()->break_stealth();
+      p()->break_stealth();
     }
-
-    trigger_deepening_shadows( ab::execute_state );
 
     // 11/28/2020 - Flagellation does not remove the buff in-game, despite being in the whitelist
     if ( affected_by.symbols_of_death_autocrit && p()->buffs.symbols_of_death_autocrit->check() && ab::data().id() != 323654 )
@@ -1674,11 +1668,15 @@ public:
     }
 
     if ( affected_by.blindside )
+    {
       p()->buffs.blindside->expire();
+    }
 
     // 12/04/2020 - Hotfix notes this is no longer consumed "while under the effects Stealth, Vanish, Subterfuge, Shadow Dance, and Shadowmeld"
     if ( affected_by.sepsis && !p()->stealthed( STEALTH_ALL & ~STEALTH_SEPSIS ) )
+    {
       p()->buffs.sepsis->decrement();
+    }
   }
 
   void schedule_travel( action_state_t* state ) override
@@ -2550,6 +2548,15 @@ struct crimson_tempest_t : public rogue_attack_t
     rogue_attack_t( name, p, p -> talent.crimson_tempest, options_str )
   {
     aoe = as<int>( data().effectN( 3 ).base_value() );
+  }
+
+  void init() override
+  {
+    rogue_attack_t::init();
+
+    // BUG: CT does not trigger alacrity, see https://github.com/SimCMinMax/WoW-BugTracker/issues/791
+    if ( p()->bugs )
+      affected_by.alacrity = false;
   }
 
   timespan_t composite_dot_duration( const action_state_t* s ) const override
@@ -4390,6 +4397,13 @@ struct sepsis_t : public rogue_attack_t
       affected_by.shadow_blades = true;
     }
 
+    void impact( action_state_t* state ) override
+    {
+      // 12/30/2020 - Due to flagging as a generator, the final hit can trigger Seal Fate
+      rogue_attack_t::impact( state );
+      trigger_seal_fate( state );
+    }
+
     // 11/29/2020 - Does not proc Blade Flurry on live
     bool procs_blade_flurry() const override
     { return false; }
@@ -4927,12 +4941,6 @@ struct subterfuge_t : public buff_t
     buff_t( r, "subterfuge", r -> find_spell( 115192 ) ),
     rogue( r )
   { }
-
-  void execute( int stacks, double value, timespan_t duration ) override
-  {
-    buff_t::execute( stacks, value, duration );
-    rogue->break_stealth();
-  }
 };
 
 struct soothing_darkness_t : public actions::rogue_heal_t
@@ -6055,12 +6063,12 @@ void actions::rogue_action_t<Base>::trigger_count_the_odds( const action_state_t
   if ( !ab::result_is_hit( state->result ) || !p()->conduit.count_the_odds.ok() )
     return;
 
-  // TOCHECK: Currently it appears all Rogues can trigger this with Ambush
+  // Currently it appears all Rogues can trigger this with Ambush
   if ( !p()->bugs && p()->specialization() != ROGUE_OUTLAW )
     return;
 
-  // TOCHECK: Does this work with Shadowmeld?
-  const double stealth_bonus = p()->stealthed( STEALTH_BASIC ) ? 1.0 + p()->conduit.count_the_odds->effectN( 3 ).percent() : 1.0;
+  // 1/8/2020 - Confirmed via logs this works with Shadowmeld
+  const double stealth_bonus = p()->stealthed( STEALTH_BASIC | STEALTH_SHADOWMELD ) ? 1.0 + p()->conduit.count_the_odds->effectN( 3 ).percent() : 1.0;
   if ( !p()->rng().roll( p()->conduit.count_the_odds.percent() * stealth_bonus ) )
     return;
 
@@ -6573,6 +6581,7 @@ void rogue_t::init_action_list()
 
     // Cooldowns
     action_priority_list_t* cds = get_action_priority_list( "cds", "Cooldowns" );
+    cds->add_action( this, "Blade Flurry", "if=spell_targets>=2&!buff.blade_flurry.up", "Blade Flurry on 2+ enemies" );
     cds->add_action( this, "Vanish", "if=!stealthed.all&variable.ambush_condition&master_assassin_remains=0&(!runeforge.deathly_shadows|buff.deathly_shadows.down&combo_points<=2)", "Using Ambush is a 2% increase, so Vanish can be sometimes be used as a utility spell unless using Master Assassin or Deathly Shadows" );
     cds->add_action( "flagellation" );
     cds->add_action( "flagellation_cleanse,if=debuff.flagellation.remains<2" );
@@ -6580,12 +6589,11 @@ void rogue_t::init_action_list()
     cds->add_action( this, "Roll the Bones", "if=buff.roll_the_bones.remains<=3|variable.rtb_reroll" );
     cds->add_talent( this, "Marked for Death", "target_if=min:target.time_to_die,if=raid_event.adds.up&(target.time_to_die<combo_points.deficit|!stealthed.rogue&combo_points.deficit>=cp_max_spend-1)", "If adds are up, snipe the one with lowest TTD. Use when dying faster than CP deficit or without any CP." );
     cds->add_talent( this, "Marked for Death", "if=raid_event.adds.in>30-raid_event.adds.duration&!stealthed.rogue&combo_points.deficit>=cp_max_spend-1", "If no adds will die within the next 30s, use MfD on boss without any CP." );
-    cds->add_action( this, "Blade Flurry", "if=spell_targets>=2&!buff.blade_flurry.up", "Blade Flurry on 2+ enemies" );
     cds->add_talent( this, "Killing Spree", "if=variable.blade_flurry_sync&(energy.time_to_max>2|spell_targets>2)" );
     cds->add_talent( this, "Blade Rush", "if=variable.blade_flurry_sync&(energy.time_to_max>2|spell_targets>2)" );
     cds->add_talent( this, "Dreadblades", "if=!stealthed.all&combo_points<=1" );
     cds->add_action( "shadowmeld,if=!stealthed.all&variable.ambush_condition" );
-
+    
     // Non-spec stuff with lower prio
     cds->add_action( potion_action );
     cds->add_action( "blood_fury" );
@@ -6602,8 +6610,8 @@ void rogue_t::init_action_list()
 
     // Finishers
     action_priority_list_t* finish = get_action_priority_list( "finish", "Finishers" );
-    finish->add_action( this, "Between the Eyes", "", "BtE on cooldown to keep the Crit debuff up" );
     finish->add_action( this, "Slice and Dice", "if=buff.slice_and_dice.remains<fight_remains&refreshable" );
+    finish->add_action( this, "Between the Eyes", "", "BtE on cooldown to keep the Crit debuff up" );
     finish->add_action( this, "Dispatch" );
 
     // Builders
@@ -6613,7 +6621,7 @@ void rogue_t::init_action_list()
     build->add_action( this, "Shiv", "if=runeforge.tiny_toxic_blade" );
     build->add_action( "echoing_reprimand" );
     build->add_action( "serrated_bone_spike,cycle_targets=1,if=buff.slice_and_dice.up&!dot.serrated_bone_spike_dot.ticking|fight_remains<=5|cooldown.serrated_bone_spike.charges_fractional>=2.75" );
-    build->add_action( this, "Pistol Shot", "if=buff.opportunity.up&(energy<45|talent.quick_draw.enabled)", "Use Pistol Shot with Opportunity if below 45 energy, or when using Quick Draw" );
+    build->add_action( this, "Pistol Shot", "if=buff.opportunity.up&(energy<45|combo_points.deficit<=1+buff.broadside.up|talent.quick_draw.enabled)", "Use Pistol Shot with Opportunity if below 45 energy, when it will exactly cap CP, or when using Quick Draw" );
     build->add_action( this, "Pistol Shot", "if=buff.opportunity.up&(buff.greenskins_wickers.up|buff.concealed_blunderbuss.up)" );
     build->add_action( this, "Sinister Strike" );
     build->add_action( this, "Gouge", "if=talent.dirty_tricks.enabled&combo_points.deficit>=1+buff.broadside.up" );
@@ -8162,7 +8170,18 @@ void rogue_t::activate()
 
 void rogue_t::break_stealth()
 {
+  // Trigger Subterfuge
+  if ( talent.subterfuge->ok() && !buffs.subterfuge->check() && stealthed( STEALTH_BASIC ) )
+  {
+    buffs.subterfuge->trigger();
+  }
+
   // Expiry delayed by 1ms in order to have it processed on the next tick. This seems to be what the server does.
+  if ( player_t::buffs.shadowmeld->check() )
+  {
+    player_t::buffs.shadowmeld->expire( timespan_t::from_millis( 1 ) );
+  }
+
   if ( buffs.stealth->check() )
   {
     buffs.stealth->expire( timespan_t::from_millis( 1 ) );

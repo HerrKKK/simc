@@ -706,7 +706,7 @@ public:
 
   // Weapon Enchants
   shaman_attack_t* windfury_mh;
-  shaman_spell_t* flametongue_oh, *flametongue_mh;
+  shaman_spell_t* flametongue;
   shaman_attack_t* hailstorm;
 
   // Elemental Spirits attacks
@@ -756,8 +756,7 @@ public:
 
     // Weapon Enchants
     windfury_mh = nullptr;
-    flametongue_mh = nullptr;
-    flametongue_oh = nullptr;
+    flametongue = nullptr;
     hailstorm   = nullptr;
 
     // Elemental Spirits attacks
@@ -3269,7 +3268,9 @@ struct lava_lash_t : public shaman_attack_t
       m *= 1.0 + p()->buff.hot_hand->data().effectN( 1 ).percent();
     }
 
-    if ( weapon->buff_type == FLAMETONGUE_IMBUE )
+    // Flametongue imbue only increases Lava Lash damage if it is imbued on the off-hand
+    // weapon
+    if ( p()->off_hand_weapon.buff_type == FLAMETONGUE_IMBUE )
     {
       m *= 1.0 + data().effectN( 2 ).percent();
     }
@@ -3568,13 +3569,27 @@ struct sundering_t : public shaman_attack_t
 
 struct weapon_imbue_t : public shaman_spell_t
 {
-  slot_e slot;
+  std::string slot_str;
+  slot_e slot, default_slot;
   imbue_e imbue;
 
-  weapon_imbue_t( const std::string& name, shaman_t* player, const spell_data_t* spell ) :
-    shaman_spell_t( name, player, spell ), slot( SLOT_INVALID ), imbue( IMBUE_NONE )
+  weapon_imbue_t( const std::string& name, shaman_t* player, slot_e d_, const spell_data_t* spell, const std::string& options_str ) :
+    shaman_spell_t( name, player, spell ), slot( SLOT_INVALID ), default_slot( d_ ), imbue( IMBUE_NONE )
   {
     harmful = false;
+
+    add_option( opt_string( "slot", slot_str ) );
+
+    parse_options( options_str );
+
+    if ( slot_str.empty() )
+    {
+      slot = default_slot;
+    }
+    else
+    {
+      slot = util::parse_slot_type( slot_str );
+    }
   }
 
   void init_finished() override
@@ -3621,61 +3636,44 @@ struct weapon_imbue_t : public shaman_spell_t
 };
 
 // Windfury Imbue =========================================================
+
 struct windfury_weapon_t : public weapon_imbue_t
 {
   windfury_weapon_t( shaman_t* player, const std::string& options_str ) :
-    weapon_imbue_t( "windfury_weapon", player, player->find_specialization_spell( "Windfury Weapon" ) )
+    weapon_imbue_t( "windfury_weapon", player, SLOT_MAIN_HAND,
+                    player->find_specialization_spell( "Windfury Weapon" ), options_str )
   {
-    parse_options( options_str );
-
-    slot = SLOT_MAIN_HAND;
     imbue = WINDFURY_IMBUE;
 
-    add_child( player->windfury_mh );
+    if ( slot == SLOT_MAIN_HAND )
+    {
+      add_child( player->windfury_mh );
+    }
+    // Technically, you can put Windfury on the off-hand slot but it disables the proc
+    else if ( slot == SLOT_OFF_HAND )
+    {
+      ;
+    }
+    else
+    {
+      sim->error( "{} invalid windfury slot '{}'", player->name(), slot_str );
+    }
   }
 };
 
 // Flametongue Imbue =========================================================
+
 struct flametongue_weapon_t : public weapon_imbue_t
 {
   flametongue_weapon_t( shaman_t* player, const std::string& options_str ) :
-    weapon_imbue_t( "flametongue_weapon", player, player->find_spell( "Flametongue Weapon" ) )
+    weapon_imbue_t( "flametongue_weapon", player,
+                    SLOT_OFF_HAND, player->find_spell( "Flametongue Weapon" ), options_str )
   {
-    std::string slot_str;
-
-    add_option( opt_string( "slot", slot_str ) );
-
-    parse_options( options_str );
-
     imbue = FLAMETONGUE_IMBUE;
 
-    /*
-    std::array<std::unique_ptr<option_t>, 1> options { {
-      opt_string( "slot", slot_str )
-    } };
-
-    opts::parse( sim, "player", options, options_str,
-      []( opts::parse_status, util::string_view, util::string_view ) {
-        return opts::parse_status::OK;
-    } );
-    */
-
-    if ( slot_str.empty() )
+    if ( slot == SLOT_MAIN_HAND || slot == SLOT_OFF_HAND )
     {
-      slot = SLOT_OFF_HAND;
-    }
-    else
-    {
-      slot = util::parse_slot_type( slot_str );
-    }
-
-    if ( slot == SLOT_OFF_HAND )
-    {
-      add_child( player->flametongue_oh );
-    }
-    else if ( slot == SLOT_MAIN_HAND )
-    {
-      add_child( player->flametongue_mh );
+      add_child( player->flametongue );
     }
     else
     {
@@ -8023,7 +8021,9 @@ void shaman_t::trigger_windfury_weapon( const action_state_t* state )
     return;
   }
 
-  if ( main_hand_weapon.buff_type != WINDFURY_IMBUE )
+  // Note, applying Windfury-imbue to off-hand disables procs in game.
+  if ( main_hand_weapon.buff_type != WINDFURY_IMBUE ||
+      off_hand_weapon.buff_type == WINDFURY_IMBUE )
   {
     return;
   }
@@ -8129,19 +8129,9 @@ void shaman_t::trigger_flametongue_weapon( const action_state_t* state )
     return;
   }
 
-  if ( main_hand_weapon.buff_type == FLAMETONGUE_IMBUE )
-  {
-    flametongue_mh->set_target( state->target );
-    flametongue_mh->execute();
-    attack->proc_ft->occur();
-  }
-
-  if ( off_hand_weapon.buff_type == FLAMETONGUE_IMBUE )
-  {
-    flametongue_oh->set_target( state->target );
-    flametongue_oh->execute();
-    attack->proc_ft->occur();
-  }
+  flametongue->set_target( state->target );
+  flametongue->execute();
+  attack->proc_ft->occur();
 }
 
 void shaman_t::trigger_lightning_shield( const action_state_t* state )
@@ -8548,11 +8538,13 @@ std::string shaman_t::default_temporary_enchant() const
     case SHAMAN_ELEMENTAL:
       if ( true_level >= 60 )
         return "main_hand:shadowcore_oil";
+      SC_FALLTHROUGH;
     case SHAMAN_ENHANCEMENT:
       return "disabled";
     case SHAMAN_RESTORATION:
       if ( true_level >= 60 )
         return "main_hand:shadowcore_oil";
+      SC_FALLTHROUGH;
     default:
       return "disabled";
   }
@@ -9030,8 +9022,7 @@ void shaman_t::init_action_list()
   {
     windfury_mh = new windfury_attack_t( "windfury_attack", this, find_spell( 25504 ), &( main_hand_weapon ) );
 
-    flametongue_mh = new flametongue_weapon_spell_t( "flametongue_attack_mh", this, &( main_hand_weapon ) );
-    flametongue_oh = new flametongue_weapon_spell_t( "flametongue_attack", this, &( off_hand_weapon ) );
+    flametongue = new flametongue_weapon_spell_t( "flametongue_attack", this, &( off_hand_weapon ) );
 
     icy_edge = new icy_edge_attack_t( "icy_edge", this, &( main_hand_weapon ) );
 

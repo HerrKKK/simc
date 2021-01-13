@@ -3788,7 +3788,7 @@ void sim_t::create_options()
     shadowlands_opts.combat_meditation_extend_chance, 0.0, 1.0 ) );
   add_option( opt_uint( "shadowlands.pointed_courage_nearby",
     shadowlands_opts.pointed_courage_nearby, 0, 5 ) );
-  add_option( opt_uint( "shadowlands.lead_by_example_nearby",
+  add_option( opt_int( "shadowlands.lead_by_example_nearby",
     shadowlands_opts.lead_by_example_nearby, 0, 4 ) );
   add_option( opt_uint( "shadowlands.stone_legionnaires_in_party",
     shadowlands_opts.stone_legionnaires_in_party, 0, 5 ) );
@@ -3804,6 +3804,7 @@ void sim_t::create_options()
   add_option( opt_float( "shadowlands.anima_field_emitter_stddev",
     shadowlands_opts.anima_field_emitter_stddev, 0.0, std::numeric_limits<double>::max() ) );
   add_option( opt_timespan( "shadowlands.retarget_shadowgrasp_totem", shadowlands_opts.retarget_shadowgrasp_totem ) );
+  add_option( opt_bool( "shadowlands.disable_iqd_execute", shadowlands_opts.disable_iqd_execute ) );
 }
 
 // sim_t::parse_option ======================================================
